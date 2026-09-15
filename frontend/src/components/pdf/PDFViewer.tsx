@@ -8,7 +8,7 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
+  'pdfjs-dist/build/pdf.worker.min.js',
   import.meta.url,
 ).toString()
 
@@ -31,7 +31,6 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
   const [inputPage, setInputPage] = useState(String(currentPage))
   const startPos = useRef<{ x: number; y: number } | null>(null)
   const pageRef = useRef<HTMLDivElement>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
 
   // PDF-i token ilə yüklə
   useEffect(() => {
@@ -73,9 +72,8 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
     booksApi.updateBookmark(bookId, clamped).catch(() => {})
   }, [numPages, bookId])
 
-  // Scroll ilə səhifə dəyişdir
-  const handleScroll = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return // horizontal scroll ignore
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.ctrlKey) return // zoom üçün
     if (e.deltaY > 50) goToPage(currentPage + 1)
     else if (e.deltaY < -50) goToPage(currentPage - 1)
   }, [currentPage, goToPage])
@@ -142,8 +140,7 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
   return (
     <div className="flex flex-col h-full bg-gray-950">
       {/* Controls */}
-      <div className="flex items-center gap-2 px-3 py-2 bg-gray-900 border-b border-gray-800 shrink-0 flex-wrap">
-        {/* Rəng seçimi */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-gray-900 border-b border-gray-800 shrink-0">
         <div className="flex gap-1">
           {HIGHLIGHT_COLORS.map((c) => (
             <button
@@ -157,14 +154,12 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
           ))}
         </div>
         <div className="flex-1" />
-        {/* Zoom */}
         <button onClick={() => setScale((s) => Math.max(s - 0.2, 0.5))}
           className="p-1 text-gray-400 hover:text-white"><ZoomOut size={16} /></button>
         <span className="text-xs text-gray-400 w-10 text-center">{Math.round(scale * 100)}%</span>
         <button onClick={() => setScale((s) => Math.min(s + 0.2, 3))}
           className="p-1 text-gray-400 hover:text-white"><ZoomIn size={16} /></button>
         <div className="w-px h-4 bg-gray-700 mx-1" />
-        {/* Səhifə naviqasiya */}
         <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1}
           className="p-1 text-gray-400 hover:text-white disabled:opacity-30">
           <ChevronLeft size={16} />
@@ -186,11 +181,10 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
         </button>
       </div>
 
-      {/* PDF Content — scroll ilə səhifə dəyişir */}
+      {/* PDF Content */}
       <div
-        ref={scrollRef}
         className="flex-1 overflow-auto flex justify-center py-4 px-2"
-        onWheel={handleScroll}
+        onWheel={handleWheel}
       >
         <Document
           file={pdfBlob}
@@ -206,15 +200,17 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
             onMouseUp={handleMouseUp}
           >
             <Page
-                pageNumber={currentPage}
-                scale={scale}
-                renderTextLayer={true}
-                renderAnnotationLayer={false}
-                renderMode="canvas"
-                devicePixelRatio={window.devicePixelRatio || 2}
-                loading={<div className="bg-white" style={{ width: 595 * scale, height: 842 * scale }} />}
+              pageNumber={currentPage}
+              scale={scale}
+              renderTextLayer={true}
+              renderAnnotationLayer={false}
+              loading={
+                <div className="bg-white flex items-center justify-center"
+                  style={{ width: 595 * scale, height: 842 * scale }}>
+                  <span className="text-gray-400 text-sm">Yüklənir...</span>
+                </div>
+              }
             />
-            {/* Annotationlar */}
             {pageAnnotations.map((ann) => (
               <div
                 key={ann.id}
@@ -228,7 +224,6 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
                 }}
               />
             ))}
-            {/* Aktiv seçim */}
             {selectionRect && (
               <div
                 className="absolute pointer-events-none rounded"
