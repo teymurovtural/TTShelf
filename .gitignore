@@ -1,0 +1,31 @@
+# Environment
+.env
+.env.local
+backend/.env
+frontend/.env
+frontend/.env.local
+
+# Binary
+bin/
+tmp/
+*.exe
+ttshelf
+
+# Go
+vendor/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/build/
+
+# TLS certs (heç vaxt repo-ya commit etmə)
+nginx/certs/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

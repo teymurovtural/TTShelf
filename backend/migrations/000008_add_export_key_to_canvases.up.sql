@@ -1,0 +1,1 @@
+ALTER TABLE canvases ADD COLUMN export_key VARCHAR(500);

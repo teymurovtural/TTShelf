@@ -1,0 +1,930 @@
+basePath: /api/v1
+definitions:
+  domain.Annotation:
+    properties:
+      book_id:
+        type: string
+      color:
+        type: string
+      created_at:
+        type: string
+      height:
+        type: number
+      id:
+        type: string
+      note:
+        type: string
+      page_number:
+        type: integer
+      user_id:
+        type: string
+      width:
+        type: number
+      x:
+        type: number
+      "y":
+        type: number
+    type: object
+  domain.AuthResponse:
+    properties:
+      access_token:
+        type: string
+      user:
+        $ref: '#/definitions/domain.UserResponse'
+    type: object
+  domain.BatchElement:
+    properties:
+      data:
+        type: object
+      id:
+        type: string
+      type:
+        type: string
+      z_index:
+        type: integer
+    type: object
+  domain.BatchSaveRequest:
+    properties:
+      elements:
+        items:
+          $ref: '#/definitions/domain.BatchElement'
+        type: array
+    type: object
+  domain.Book:
+    properties:
+      author:
+        type: string
+      created_at:
+        type: string
+      file_size:
+        type: integer
+      id:
+        type: string
+      last_page:
+        type: integer
+      title:
+        type: string
+      total_pages:
+        type: integer
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  domain.BookmarkRequest:
+    properties:
+      last_page:
+        type: integer
+    type: object
+  domain.BooksListResponse:
+    properties:
+      books:
+        items:
+          $ref: '#/definitions/domain.Book'
+        type: array
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
+  domain.Canvas:
+    properties:
+      book_id:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  domain.CanvasElement:
+    properties:
+      canvas_id:
+        type: string
+      created_at:
+        type: string
+      data:
+        type: object
+      id:
+        type: string
+      type:
+        type: string
+      updated_at:
+        type: string
+      z_index:
+        type: integer
+    type: object
+  domain.CanvasListResponse:
+    properties:
+      canvases:
+        items:
+          $ref: '#/definitions/domain.Canvas'
+        type: array
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
+  domain.CreateAnnotationRequest:
+    properties:
+      color:
+        type: string
+      height:
+        type: number
+      note:
+        type: string
+      page_number:
+        type: integer
+      width:
+        type: number
+      x:
+        type: number
+      "y":
+        type: number
+    type: object
+  domain.CreateCanvasRequest:
+    properties:
+      book_id:
+        type: string
+      title:
+        type: string
+    type: object
+  domain.CreateElementRequest:
+    properties:
+      data:
+        type: object
+      type:
+        type: string
+      z_index:
+        type: integer
+    type: object
+  domain.LoginRequest:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+    type: object
+  domain.RegisterRequest:
+    properties:
+      email:
+        type: string
+      name:
+        type: string
+      password:
+        type: string
+      username:
+        type: string
+    type: object
+  domain.UpdateAnnotationRequest:
+    properties:
+      color:
+        type: string
+      note:
+        type: string
+    type: object
+  domain.UpdateCanvasTitleRequest:
+    properties:
+      title:
+        type: string
+    type: object
+  domain.UpdateElementRequest:
+    properties:
+      data:
+        type: object
+      z_index:
+        type: integer
+    type: object
+  domain.UserResponse:
+    properties:
+      created_at:
+        type: string
+      email:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      username:
+        type: string
+    type: object
+  response.ErrorBody:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  response.Response:
+    properties:
+      data: {}
+      error:
+        $ref: '#/definitions/response.ErrorBody'
+      success:
+        type: boolean
+    type: object
+host: localhost:9090
+info:
+  contact: {}
+  description: TTShelf — Personal Knowledge Management System API
+  title: TTShelf API
+  version: "1.0"
+paths:
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Login request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.AuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Response'
+      summary: Login user
+      tags:
+      - auth
+  /auth/logout:
+    delete:
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Response'
+      summary: Logout user
+      tags:
+      - auth
+  /auth/refresh:
+    post:
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.AuthResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Response'
+      summary: Refresh access token
+      tags:
+      - auth
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Register request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/domain.AuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/response.Response'
+      summary: Register new user
+      tags:
+      - auth
+  /books:
+    get:
+      parameters:
+      - description: Limit (default 20)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.BooksListResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Get all books
+      tags:
+      - books
+    post:
+      consumes:
+      - multipart/form-data
+      parameters:
+      - description: Book title
+        in: formData
+        name: title
+        required: true
+        type: string
+      - description: Book author
+        in: formData
+        name: author
+        type: string
+      - description: PDF file
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/domain.Book'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Upload a book (PDF)
+      tags:
+      - books
+  /books/{id}:
+    delete:
+      parameters:
+      - description: Book ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Delete book
+      tags:
+      - books
+    get:
+      parameters:
+      - description: Book ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Book'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Get book by ID
+      tags:
+      - books
+  /books/{id}/annotations:
+    get:
+      parameters:
+      - description: Book ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/domain.Annotation'
+            type: array
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Get annotations for a book
+      tags:
+      - annotations
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Book ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Annotation data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateAnnotationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/domain.Annotation'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Create annotation
+      tags:
+      - annotations
+  /books/{id}/annotations/{aid}:
+    delete:
+      parameters:
+      - description: Book ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Annotation ID
+        in: path
+        name: aid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Delete annotation
+      tags:
+      - annotations
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Book ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Annotation ID
+        in: path
+        name: aid
+        required: true
+        type: string
+      - description: Update data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateAnnotationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Annotation'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Update annotation
+      tags:
+      - annotations
+  /books/{id}/bookmark:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Book ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Bookmark request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.BookmarkRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Update bookmark (last page)
+      tags:
+      - books
+  /books/{id}/file:
+    get:
+      parameters:
+      - description: Book ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/pdf
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Stream PDF file
+      tags:
+      - books
+  /canvases:
+    get:
+      parameters:
+      - description: Limit (default 20)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.CanvasListResponse'
+      security:
+      - BearerAuth: []
+      summary: Get all canvases
+      tags:
+      - canvases
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Create canvas request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateCanvasRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/domain.Canvas'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Create new canvas
+      tags:
+      - canvases
+  /canvases/{id}:
+    delete:
+      parameters:
+      - description: Canvas ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Delete canvas
+      tags:
+      - canvases
+    get:
+      parameters:
+      - description: Canvas ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Canvas'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Get canvas by ID
+      tags:
+      - canvases
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Canvas ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update title request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateCanvasTitleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Canvas'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Update canvas title
+      tags:
+      - canvases
+  /canvases/{id}/elements:
+    get:
+      parameters:
+      - description: Canvas ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/domain.CanvasElement'
+            type: array
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Get canvas elements
+      tags:
+      - canvases
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Canvas ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Element data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateElementRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/domain.CanvasElement'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Create canvas element
+      tags:
+      - canvases
+  /canvases/{id}/elements/{eid}:
+    delete:
+      parameters:
+      - description: Canvas ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Element ID
+        in: path
+        name: eid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Delete canvas element
+      tags:
+      - canvases
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Canvas ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Element ID
+        in: path
+        name: eid
+        required: true
+        type: string
+      - description: Element data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateElementRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.CanvasElement'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Update canvas element
+      tags:
+      - canvases
+  /canvases/{id}/elements/batch:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Canvas ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Batch elements
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.BatchSaveRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Batch save canvas elements (auto-save)
+      tags:
+      - canvases
+  /users/me:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.UserResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.Response'
+      security:
+      - BearerAuth: []
+      summary: Get current user
+      tags:
+      - users
+securityDefinitions:
+  BearerAuth:
+    description: JWT token. Yalnız token daxil edin, "Bearer " prefiksi avtomatik
+      əlavə olunur.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
