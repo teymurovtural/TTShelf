@@ -1,8 +1,8 @@
-import { useRef, useCallback, useState, useEffect } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import Konva from 'konva'
 import {
-  Stage, Layer, Rect, Circle, Arrow, Text, Image as KonvaImage,
-  Line, Transformer, Group
+  Stage, Layer, Rect, Arrow, Text, Image as KonvaImage,
+  Line, Transformer,
 } from 'react-konva'
 import { useCanvasStore } from '../../store/canvasStore'
 import { uploadApi } from '../../api/upload'
@@ -14,44 +14,52 @@ interface CanvasBoardProps {
   height: number
 }
 
-const COLORS = {
-  fill: '#3b82f6',
-  stroke: '#1d4ed8',
-  text: '#ffffff',
+// Default dəyərlər — ağ fon üçün tünd rənglər
+const SHAPE_DEFAULTS = {
+  rect:     { fill: '#dbeafe', stroke: '#3b82f6', strokeWidth: 2 },
+  circle:   { fill: '#dcfce7', stroke: '#22c55e', strokeWidth: 2 },
+  line:     { stroke: '#374151', strokeWidth: 2 },
+  arrow:    { stroke: '#6d28d9', strokeWidth: 2 },
+  freehand: { stroke: '#374151', strokeWidth: 3 },
+  text:     { fill: '#0f172a', fontSize: 20, fontFamily: 'Arial' },
 }
 
 export default function CanvasBoard({ width, height }: CanvasBoardProps) {
   const {
     elements, tool, selectedId,
-    addElement, updateElement, setSelectedId, setTool
+    addElement, updateElement, setSelectedId, setTool,
   } = useCanvasStore()
 
-  const stageRef = useRef<Konva.Stage>(null)
+  const stageRef      = useRef<Konva.Stage>(null)
   const transformerRef = useRef<Konva.Transformer>(null)
-  const isDrawing = useRef(false)
-  const drawingId = useRef<string | null>(null)
+  const textareaRef   = useRef<HTMLTextAreaElement | null>(null)
+  const isDrawing     = useRef(false)
+  const drawingId     = useRef<string | null>(null)
 
-  const [stagePos, setStagePos] = useState({ x: 0, y: 0 })
+  const [stagePos,   setStagePos]   = useState({ x: 0, y: 0 })
   const [stageScale, setStageScale] = useState(1)
+  const [editingId,  setEditingId]  = useState<string | null>(null)
+  const [editPos,    setEditPos]    = useState({ x: 0, y: 0 })
 
-  // Transformer-i seçili elementə bağla
+  // Transformer — seçilmiş elementə bağla
   useEffect(() => {
     if (!transformerRef.current || !stageRef.current) return
-    if (selectedId) {
+    if (selectedId && !editingId) {
       const node = stageRef.current.findOne(`#${selectedId}`)
       if (node) {
         transformerRef.current.nodes([node])
         transformerRef.current.getLayer()?.batchDraw()
+        return
       }
-    } else {
-      transformerRef.current.nodes([])
-      transformerRef.current.getLayer()?.batchDraw()
     }
-  }, [selectedId])
+    transformerRef.current.nodes([])
+    transformerRef.current.getLayer()?.batchDraw()
+  }, [selectedId, editingId, elements])
 
   // Ctrl+V — şəkil paste
   useEffect(() => {
     const handlePaste = async (e: ClipboardEvent) => {
+      if (editingId) return
       const items = e.clipboardData?.items
       if (!items) return
       for (const item of Array.from(items)) {
@@ -64,46 +72,43 @@ export default function CanvasBoard({ width, height }: CanvasBoardProps) {
             const img = new window.Image()
             img.src = url
             img.onload = () => {
-              const el: CanvasElement = {
-                id: uuidv4(),
-                canvas_id: '',
-                type: 'image',
+              addElement({
+                id: uuidv4(), canvas_id: '', type: 'image',
                 data: { x: 100, y: 100, width: img.width / 2, height: img.height / 2, src: url },
                 z_index: elements.length,
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
-              }
-              addElement(el)
+              })
             }
-          } catch (err) {
-            console.error('Şəkil paste xətası:', err)
-          }
+          } catch {}
         }
       }
     }
     window.addEventListener('paste', handlePaste)
     return () => window.removeEventListener('paste', handlePaste)
-  }, [elements.length])
+  }, [editingId, elements.length])
 
   // Zoom
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault()
     const stage = stageRef.current
     if (!stage) return
-    const scaleBy = 1.05
     const oldScale = stageScale
-    const pointer = stage.getPointerPosition()
+    const pointer  = stage.getPointerPosition()
     if (!pointer) return
-    const newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy
-    const clampedScale = Math.min(Math.max(newScale, 0.1), 5)
+    const scaleBy  = 1.06
+    const newScale = Math.min(Math.max(
+      e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy,
+      0.1,
+    ), 8)
     const mousePointTo = {
       x: (pointer.x - stagePos.x) / oldScale,
       y: (pointer.y - stagePos.y) / oldScale,
     }
-    setStageScale(clampedScale)
+    setStageScale(newScale)
     setStagePos({
-      x: pointer.x - mousePointTo.x * clampedScale,
-      y: pointer.y - mousePointTo.y * clampedScale,
+      x: pointer.x - mousePointTo.x * newScale,
+      y: pointer.y - mousePointTo.y * newScale,
     })
   }
 
@@ -119,6 +124,12 @@ export default function CanvasBoard({ width, height }: CanvasBoardProps) {
   }
 
   const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Text editing açıqsa bağla
+    if (editingId) {
+      finishEditing()
+      return
+    }
+
     if (tool === 'select') {
       if (e.target === e.target.getStage()) setSelectedId(null)
       return
@@ -126,23 +137,24 @@ export default function CanvasBoard({ width, height }: CanvasBoardProps) {
     if (tool === 'pan') return
 
     const pos = getPointerOnStage()
-    const id = uuidv4()
+    const id  = uuidv4()
     drawingId.current = id
     isDrawing.current = true
 
     let data: ElementData = {}
+
     if (tool === 'rect') {
-      data = { x: pos.x, y: pos.y, width: 0, height: 0, fill: '#3b82f620', stroke: '#3b82f6', strokeWidth: 2 }
+      data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.rect }
     } else if (tool === 'circle') {
-      data = { x: pos.x, y: pos.y, width: 0, height: 0, fill: '#10b98120', stroke: '#10b981', strokeWidth: 2 }
+      data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.circle }
     } else if (tool === 'line') {
-      data = { points: [pos.x, pos.y, pos.x, pos.y], stroke: '#e2e8f0', strokeWidth: 2 }
+      data = { points: [pos.x, pos.y, pos.x, pos.y], ...SHAPE_DEFAULTS.line }
     } else if (tool === 'arrow') {
-      data = { points: [pos.x, pos.y, pos.x, pos.y], stroke: '#f59e0b', strokeWidth: 2 }
+      data = { points: [pos.x, pos.y, pos.x, pos.y], ...SHAPE_DEFAULTS.arrow }
     } else if (tool === 'freehand') {
-      data = { points: [pos.x, pos.y], stroke: '#e2e8f0', strokeWidth: 3, lineCap: 'round', lineJoin: 'round' }
+      data = { points: [pos.x, pos.y], ...SHAPE_DEFAULTS.freehand, lineCap: 'round', lineJoin: 'round' }
     } else if (tool === 'text') {
-      data = { x: pos.x, y: pos.y, text: 'Mətn', fontSize: 20, fill: '#ffffff', fontFamily: 'Arial' }
+      data = { x: pos.x, y: pos.y, text: 'Mətn', ...SHAPE_DEFAULTS.text }
       isDrawing.current = false
     } else if (tool === 'image') {
       const input = document.createElement('input')
@@ -171,26 +183,25 @@ export default function CanvasBoard({ width, height }: CanvasBoardProps) {
     addElement({
       id, canvas_id: '', type: tool,
       data, z_index: elements.length,
-      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     })
   }
 
   const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (!isDrawing.current || !drawingId.current) return
     const pos = getPointerOnStage()
-    const el = elements.find((el) => el.id === drawingId.current)
+    const el  = elements.find((el) => el.id === drawingId.current)
     if (!el) return
 
     if (tool === 'rect' || tool === 'circle') {
       updateElement(drawingId.current, {
-        width: pos.x - (el.data.x || 0),
+        width:  pos.x - (el.data.x || 0),
         height: pos.y - (el.data.y || 0),
       })
     } else if (tool === 'line' || tool === 'arrow') {
       const pts = el.data.points || []
-      updateElement(drawingId.current, {
-        points: [pts[0], pts[1], pos.x, pos.y],
-      })
+      updateElement(drawingId.current, { points: [pts[0], pts[1], pos.x, pos.y] })
     } else if (tool === 'freehand') {
       updateElement(drawingId.current, {
         points: [...(el.data.points || []), pos.x, pos.y],
@@ -214,7 +225,7 @@ export default function CanvasBoard({ width, height }: CanvasBoardProps) {
     const node = e.target
     updateElement(id, {
       x: node.x(), y: node.y(),
-      width: node.width() * node.scaleX(),
+      width:  node.width()  * node.scaleX(),
       height: node.height() * node.scaleY(),
       rotation: node.rotation(),
       scaleX: 1, scaleY: 1,
@@ -223,83 +234,209 @@ export default function CanvasBoard({ width, height }: CanvasBoardProps) {
     node.scaleY(1)
   }
 
+  // Text double-click — native textarea ilə redaktə
+  const startEditing = (el: CanvasElement) => {
+    if (el.type !== 'text') return
+    const stage = stageRef.current
+    if (!stage) return
+
+    const node = stage.findOne(`#${el.id}`) as Konva.Text
+    if (!node) return
+
+    // Textarea-nın stage üzərindəki mövqeyini hesabla
+    const absPos = node.getAbsolutePosition()
+    const stageBox = stage.container().getBoundingClientRect()
+
+    setEditingId(el.id)
+    setEditPos({
+      x: stageBox.left + absPos.x,
+      y: stageBox.top  + absPos.y,
+    })
+
+    node.hide()
+    transformerRef.current?.hide()
+    transformerRef.current?.getLayer()?.batchDraw()
+
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }
+
+  const finishEditing = () => {
+    if (!editingId) return
+    const ta = textareaRef.current
+    if (ta) {
+      updateElement(editingId, { text: ta.value || ' ' })
+    }
+
+    const stage = stageRef.current
+    if (stage) {
+      const node = stage.findOne(`#${editingId}`) as Konva.Text
+      node?.show()
+      transformerRef.current?.show()
+      transformerRef.current?.getLayer()?.batchDraw()
+    }
+    setEditingId(null)
+  }
+
+  const commonProps = (el: CanvasElement) => ({
+    id: el.id,
+    draggable: tool === 'select',
+    opacity: el.data.opacity ?? 1,
+    onClick: () => tool === 'select' && setSelectedId(el.id),
+    onDblClick: () => el.type === 'text' && startEditing(el),
+    onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
+    onTransformEnd: (e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e),
+  })
+
   const renderElement = (el: CanvasElement) => {
     const d = el.data
-    const isSelected = selectedId === el.id
-    const commonProps = {
-      id: el.id,
-      draggable: tool === 'select',
-      onClick: () => tool === 'select' && setSelectedId(el.id),
-      onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
-      onTransformEnd: (e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e),
-    }
+    const cp = commonProps(el)
 
     switch (el.type) {
       case 'rect':
-        return <Rect key={el.id} {...commonProps}
-          x={d.x} y={d.y} width={d.width} height={d.height}
-          fill={d.fill} stroke={d.stroke} strokeWidth={d.strokeWidth}
-          rotation={d.rotation} />
+        return (
+          <Rect key={el.id} {...cp}
+            x={d.x} y={d.y}
+            width={Math.abs(d.width  || 0)}
+            height={Math.abs(d.height || 0)}
+            offsetX={d.width  && d.width  < 0 ? Math.abs(d.width)  : 0}
+            offsetY={d.height && d.height < 0 ? Math.abs(d.height) : 0}
+            fill={d.fill === 'transparent' ? undefined : d.fill}
+            stroke={d.stroke === 'transparent' ? undefined : d.stroke}
+            strokeWidth={d.strokeWidth}
+            rotation={d.rotation}
+          />
+        )
       case 'circle':
-        return <Rect key={el.id} {...commonProps}
-          x={d.x} y={d.y} width={d.width} height={d.height}
-          fill={d.fill} stroke={d.stroke} strokeWidth={d.strokeWidth}
-          cornerRadius={9999} rotation={d.rotation} />
+        return (
+          <Rect key={el.id} {...cp}
+            x={d.x} y={d.y}
+            width={Math.abs(d.width  || 0)}
+            height={Math.abs(d.height || 0)}
+            offsetX={d.width  && d.width  < 0 ? Math.abs(d.width)  : 0}
+            offsetY={d.height && d.height < 0 ? Math.abs(d.height) : 0}
+            fill={d.fill === 'transparent' ? undefined : d.fill}
+            stroke={d.stroke === 'transparent' ? undefined : d.stroke}
+            strokeWidth={d.strokeWidth}
+            cornerRadius={99999}
+            rotation={d.rotation}
+          />
+        )
       case 'line':
-        return <Line key={el.id} {...commonProps}
-          points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth}
-          lineCap="round" lineJoin="round" />
+        return (
+          <Line key={el.id} {...cp}
+            points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth}
+            lineCap="round" lineJoin="round"
+          />
+        )
       case 'arrow':
-        return <Arrow key={el.id} {...commonProps}
-          points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth}
-          fill={d.stroke} pointerLength={10} pointerWidth={8} />
+        return (
+          <Arrow key={el.id} {...cp}
+            points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth}
+            fill={d.stroke} pointerLength={10} pointerWidth={8}
+          />
+        )
       case 'freehand':
-        return <Line key={el.id} {...commonProps}
-          points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth}
-          tension={0.5} lineCap="round" lineJoin="round" />
+        return (
+          <Line key={el.id} {...cp}
+            points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth}
+            tension={0.5} lineCap="round" lineJoin="round"
+          />
+        )
       case 'text':
-        return <Text key={el.id} {...commonProps}
-          x={d.x} y={d.y} text={d.text} fontSize={d.fontSize}
-          fill={d.fill} fontFamily={d.fontFamily} rotation={d.rotation} />
+        return (
+          <Text key={el.id} {...cp}
+            x={d.x} y={d.y}
+            text={editingId === el.id ? '' : (d.text || '')}
+            fontSize={d.fontSize} fill={d.fill}
+            fontFamily={d.fontFamily} rotation={d.rotation}
+          />
+        )
       case 'image':
-        return <ImageElement key={el.id} el={el} commonProps={commonProps} />
+        return <ImageElement key={el.id} el={el} commonProps={cp} />
       default:
         return null
     }
   }
 
+  // Editing textarea-nın fonu + ölçüsü
+  const editingEl = editingId ? elements.find((e) => e.id === editingId) : null
+
   return (
-    <Stage
-      ref={stageRef}
-      width={width}
-      height={height}
-      scaleX={stageScale}
-      scaleY={stageScale}
-      x={stagePos.x}
-      y={stagePos.y}
-      onWheel={handleWheel}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      draggable={tool === 'pan'}
-      onDragEnd={(e) => {
-        setStagePos({ x: e.target.x(), y: e.target.y() })
-      }}
-      style={{ background: '#0f172a', cursor: tool === 'pan' ? 'grab' : 'crosshair' }}
-    >
-      <Layer>
-        {elements.map(renderElement)}
-        <Transformer ref={transformerRef} />
-      </Layer>
-    </Stage>
+    <div className="relative w-full h-full" style={{ background: '#ffffff' }}>
+      <Stage
+        ref={stageRef}
+        width={width}
+        height={height}
+        scaleX={stageScale}
+        scaleY={stageScale}
+        x={stagePos.x}
+        y={stagePos.y}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        draggable={tool === 'pan'}
+        onDragEnd={(e) => setStagePos({ x: e.target.x(), y: e.target.y() })}
+        style={{
+          cursor: tool === 'pan' ? 'grab'
+            : tool === 'select' ? 'default'
+            : 'crosshair',
+        }}
+      >
+        <Layer>
+          {elements.map(renderElement)}
+          <Transformer
+            ref={transformerRef}
+            boundBoxFunc={(oldBox, newBox) =>
+              newBox.width < 5 || newBox.height < 5 ? oldBox : newBox
+            }
+          />
+        </Layer>
+      </Stage>
+
+      {/* Text editing overlay */}
+      {editingId && editingEl && (
+        <textarea
+          ref={textareaRef}
+          defaultValue={editingEl.data.text || ''}
+          onBlur={finishEditing}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') finishEditing()
+            // Shift+Enter — yeni sətir, Enter — bitir
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              finishEditing()
+            }
+          }}
+          style={{
+            position: 'fixed',
+            top: editPos.y,
+            left: editPos.x,
+            fontSize: (editingEl.data.fontSize ?? 20) * stageScale,
+            fontFamily: editingEl.data.fontFamily ?? 'Arial',
+            color: editingEl.data.fill ?? '#0f172a',
+            background: 'rgba(255,255,255,0.95)',
+            border: '2px solid #4f46e5',
+            borderRadius: 4,
+            padding: '2px 4px',
+            outline: 'none',
+            minWidth: 60,
+            minHeight: 30,
+            resize: 'both',
+            lineHeight: 1.2,
+            zIndex: 100,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+          }}
+        />
+      )}
+    </div>
   )
 }
 
-// Image elementi ayrıca komponent — useImage hook-u istifadə edir
-function ImageElement({ el, commonProps }: {
-  el: CanvasElement
-  commonProps: object
-}) {
+// Image element — useImage hook olmadan
+function ImageElement({
+  el, commonProps,
+}: { el: CanvasElement; commonProps: object }) {
   const [image, setImage] = useState<HTMLImageElement | null>(null)
   const d = el.data
 

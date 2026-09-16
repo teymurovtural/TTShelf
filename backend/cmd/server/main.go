@@ -6,7 +6,6 @@
 // @securityDefinitions.apikey BearerAuth
 // @in header
 // @name Authorization
-// @description JWT token. Yalnız token daxil edin, "Bearer " prefiksi avtomatik əlavə olunur.
 
 package main
 
@@ -23,6 +22,7 @@ import (
 	"github.com/teymurovtural/ttshelf-backend/internal/service"
 	"github.com/teymurovtural/ttshelf-backend/internal/storage"
 	"github.com/teymurovtural/ttshelf-backend/pkg/logger"
+	"github.com/teymurovtural/ttshelf-backend/pkg/mailer"
 )
 
 func main() {
@@ -54,22 +54,21 @@ func main() {
 		logger.Fatal("Failed to connect to MinIO")
 	}
 
-	// Repositories
-	userRepo := repository.NewUserRepository(db)
-	bookRepo := repository.NewBookRepository(db)
-	canvasRepo := repository.NewCanvasRepository(db)
+	m := mailer.New(&cfg.SMTP)
+
+	userRepo       := repository.NewUserRepository(db)
+	bookRepo       := repository.NewBookRepository(db)
+	canvasRepo     := repository.NewCanvasRepository(db)
 	annotationRepo := repository.NewAnnotationRepository(db)
-	fontRepo := repository.NewFontRepository(db)
+	fontRepo       := repository.NewFontRepository(db)
 
-	// Services
-	authSvc := service.NewAuthService(userRepo, rdb, &cfg.JWT)
-	userSvc := service.NewUserService(userRepo)
-	bookSvc := service.NewBookService(bookRepo, minioClient)
-	canvasSvc := service.NewCanvasService(canvasRepo)
+	authSvc       := service.NewAuthService(userRepo, rdb, &cfg.JWT, m)
+	userSvc       := service.NewUserService(userRepo)
+	bookSvc       := service.NewBookService(bookRepo, minioClient)
+	canvasSvc     := service.NewCanvasService(canvasRepo)
 	annotationSvc := service.NewAnnotationService(annotationRepo, bookRepo)
-	fontSvc := service.NewFontService(fontRepo, cfg.Minio.PublicURL, cfg.Minio.BucketName)
+	fontSvc       := service.NewFontService(fontRepo, cfg.Minio.PublicURL, cfg.Minio.BucketName)
 
-	// Handlers
 	handlers := &router.Handlers{
 		Auth:       handler.NewAuthHandler(authSvc, &cfg.JWT, &cfg.Server),
 		User:       handler.NewUserHandler(userSvc),
@@ -81,7 +80,6 @@ func main() {
 		Export:     handler.NewExportHandler(canvasSvc, minioClient, cfg.Minio.PublicURL),
 	}
 
-	// Router
 	r := router.New(handlers, cfg.JWT.AccessSecret, cfg.Server.AllowedOrigins, cfg.Server.Env)
 
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)

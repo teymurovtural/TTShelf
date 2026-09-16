@@ -37,7 +37,7 @@ type MinioConfig struct {
 	SecretAccessKey string
 	BucketName      string
 	UseSSL          bool
-	PublicURL       string // Frontend-dən əlçatan URL (məs: http://localhost:9000)
+	PublicURL       string
 }
 
 type JWTConfig struct {
@@ -47,12 +47,22 @@ type JWTConfig struct {
 	RefreshExpiryDays   int
 }
 
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+	FromName string
+}
+
 type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	Redis    RedisConfig
 	Minio    MinioConfig
 	JWT      JWTConfig
+	SMTP     SMTPConfig
 }
 
 func Load() *Config {
@@ -94,6 +104,14 @@ func Load() *Config {
 			RefreshSecret:       getEnv("JWT_REFRESH_SECRET", ""),
 			AccessExpiryMinutes: getEnvAsInt("JWT_ACCESS_EXPIRY_MINUTES", 15),
 			RefreshExpiryDays:   getEnvAsInt("JWT_REFRESH_EXPIRY_DAYS", 7),
+		},
+		SMTP: SMTPConfig{
+			Host:     getEnv("SMTP_HOST", ""),
+			Port:     getEnvAsInt("SMTP_PORT", 587),
+			Username: getEnv("SMTP_USERNAME", ""),
+			Password: getEnv("SMTP_PASSWORD", ""),
+			From:     getEnv("SMTP_FROM", ""),
+			FromName: getEnv("SMTP_FROM_NAME", "TTShelf"),
 		},
 	}
 }
