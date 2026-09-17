@@ -1,13 +1,16 @@
 import { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 'react'
 import Konva from 'konva'
 import {
-  Stage, Layer, Rect, Arrow, Text, Image as KonvaImage,
+  Stage, Layer, Rect, Arrow, Image as KonvaImage,
   Line, Transformer, RegularPolygon, Star as KonvaStar, Ellipse, Group, Path,
 } from 'react-konva'
 import { useCanvasStore } from '../../store/canvasStore'
 import { uploadApi } from '../../api/upload'
-import type { CanvasElement, ElementData } from '../../types'
+import type { CanvasElement, ElementData, TextRun } from '../../types'
 import { v4 as uuidv4 } from 'uuid'
+import RichTextShape, { isAreaText, textBox } from './RichTextShape'
+import RichTextEditor from './RichTextEditor'
+import { getRuns, runsToPlainText } from './richText'
 
 // ---- Rounded polygon path helpers ----
 function roundedPolygonPath(points: number[][], radius: number): string {
@@ -79,13 +82,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
   const {
     elements, tool, selectedId, selectedIds,
-    addElement, updateElement, deleteSelected,
+    addElement, updateElement, deleteSelected, deleteElement,
     setSelectedId, setSelectedIds, setTool, pushHistory,
   } = useCanvasStore()
 
   const stageRef       = useRef<Konva.Stage>(null)
   const transformerRef = useRef<Konva.Transformer>(null)
-  const textareaRef    = useRef<HTMLTextAreaElement | null>(null)
   const isDrawing      = useRef(false)
   const drawingId      = useRef<string | null>(null)
   const stagePosRef    = useRef({ x: 0, y: 0 })
@@ -205,13 +207,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
   // Delete key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName
+      const target = e.target as HTMLElement
+      const tag = target.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (target.isContentEditable) return       // mətn redaktəsi gedir
+      if (editingId) return
       if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [deleteSelected])
+  }, [deleteSelected, editingId])
 
   // Ctrl+V paste
   useEffect(() => {
@@ -273,42 +278,50 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     }
   }
 
-  // Text editing
-  const startEditing = (el: CanvasElement) => {
-    if (el.type !== 'text') return
+  // ── Mətn redaktəsi (rich text) ──
+  const startEditing = (elId: string) => {
+    const el = elementsRef.current.find((e) => e.id === elId)
+    if (!el || el.type !== 'text') return
     const stage = stageRef.current
     if (!stage) return
-    const node = stage.findOne(`#${el.id}`) as Konva.Text
+    const node = stage.findOne(`#${el.id}`)
     if (!node) return
     const stageBox = stage.container().getBoundingClientRect()
     const absPos   = node.getAbsolutePosition()
-    const hasArea  = Math.abs(el.data.width ?? 0) > 10 && Math.abs(el.data.height ?? 0) > 10
+    const sc       = stageScaleRef.current
+    const area     = isAreaText(el)
+    const box      = textBox(el)
     setEditingId(el.id)
     setEditPos({
       x: stageBox.left + absPos.x,
       y: stageBox.top  + absPos.y,
-      scale: stageScaleRef.current,
-      areaW: hasArea ? Math.abs(el.data.width!)  * stageScaleRef.current : undefined,
-      areaH: hasArea ? Math.abs(el.data.height!) * stageScaleRef.current : undefined,
+      scale: sc,
+      areaW: area ? box.width  * sc : undefined,
+      areaH: area ? box.height * sc : undefined,
     })
-    node.hide()
     transformerRef.current?.hide()
     transformerRef.current?.getLayer()?.batchDraw()
-    setTimeout(() => { textareaRef.current?.focus(); textareaRef.current?.select() }, 10)
+  }
+
+  const handleRunsChange = (id: string, runs: TextRun[]) => {
+    updateElement(id, { runs, text: runsToPlainText(runs) })
   }
 
   const finishEditing = () => {
     if (!editingId) return
-    const ta = textareaRef.current
-    if (ta) { pushHistory(); updateElement(editingId, { text: ta.value || ' ' }) }
-    const stage = stageRef.current
-    if (stage) {
-      const node = stage.findOne(`#${editingId}`) as Konva.Text
-      node?.show()
-      transformerRef.current?.show()
-      transformerRef.current?.getLayer()?.batchDraw()
-    }
+    const id = editingId
     setEditingId(null)
+    transformerRef.current?.show()
+    transformerRef.current?.getLayer()?.batchDraw()
+
+    const el = elementsRef.current.find((e) => e.id === id)
+    // Tamamilə boş qalan mətn elementi canvas-da qalmasın
+    if (el && !runsToPlainText(getRuns(el.data)).trim()) {
+      deleteElement(id)
+      return
+    }
+    pushHistory()
+    setSelectedIds([id])
   }
 
   const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -328,8 +341,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       const clickedEl = clickedId ? elementsRef.current.find((el) => el.id === clickedId) : null
       if (clickedEl && clickedEl.type === 'text') {
         e.cancelBubble = true
+        setTool('select')
         setSelectedIds([clickedEl.id])
-        setTimeout(() => startEditing(clickedEl), 30)
+        setTimeout(() => startEditing(clickedEl.id), 30)
         return
       }
     }
@@ -378,7 +392,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       // mouseUp-da ölçüyə görə area və ya klik text yaradılır
       isDrawing.current = true
       drawingId.current = id
-      data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.text, text: '' }
+      data = {
+        x: pos.x, y: pos.y, width: 0, height: 0,
+        ...SHAPE_DEFAULTS.text,
+        text: '', runs: [{ text: '' }], autoWidth: true,
+        align: 'left', lineHeight: 1.2, letterSpacing: 0,
+      }
     }
 
     addElement({ id, canvas_id: '', type: tool, data, z_index: elements.length, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
@@ -483,30 +502,33 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     // Text tool: area > 10px olarsa area text, kiçik olarsa klik text
     const currentEl = elementsRef.current.find((e) => e.id === drawingId.current)
     if (currentEl && currentEl.type === 'text') {
-      const w = Math.abs(currentEl.data.width ?? 0)
-      const h = Math.abs(currentEl.data.height ?? 0)
+      const id = drawingId.current
+      const rawW = currentEl.data.width ?? 0
+      const rawH = currentEl.data.height ?? 0
+      const w = Math.abs(rawW)
+      const h = Math.abs(rawH)
       if (w > 10 && h > 10) {
-        // Area text — ölçü saxlanır, wrap işləyir
-        setSelectedIds([drawingId.current])
-        const id = drawingId.current
-        drawingId.current = null
-        setTool('select')
-        setTimeout(() => startEditing(currentEl), 50)
+        // Area mətn — mənfi istiqamətdə çəkiləni normallaşdır
+        updateElement(id, {
+          x: (currentEl.data.x ?? 0) + Math.min(rawW, 0),
+          y: (currentEl.data.y ?? 0) + Math.min(rawH, 0),
+          width: w, height: h, autoWidth: false,
+        })
       } else {
-        // Klik text — width/height sıfırla (auto-size)
-        updateElement(drawingId.current, { width: 0, height: 0 })
-        setSelectedIds([drawingId.current])
-        const id = drawingId.current
-        drawingId.current = null
-        setTool('select')
-        setTimeout(() => startEditing(currentEl), 50)
+        // Nöqtə mətni — en/hündürlük avtomatik
+        updateElement(id, { width: 0, height: 0, autoWidth: true })
       }
+      drawingId.current = null
+      setTool('select')
+      setSelectedIds([id])
+      setTimeout(() => startEditing(id), 50)
       return
     }
 
-    setSelectedIds([drawingId.current])
+    const newId = drawingId.current
     drawingId.current = null
     setTool('select')
+    setSelectedIds([newId])
   }
 
   // Element drag — tək və ya group
@@ -528,6 +550,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
   // Element bounding box — sol yuxarı künc + ölçü
   const getElBBox = (el: CanvasElement) => {
     const d = el.data
+    if (el.type === 'text') {
+      const b = textBox(el)
+      return { x: d.x ?? 0, y: d.y ?? 0, w: b.width, h: b.height }
+    }
     const isCentered = ['triangle','pentagon','hexagon','star'].includes(el.type)
     if (d.points && d.points.length >= 2) {
       const pts = d.points
@@ -567,6 +593,38 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     } else {
       updateElement(id, { x: e.target.x(), y: e.target.y() })
     }
+  }
+
+  // Mətn qutusu dartılanda hərflər deformasiya olmasın —
+  // scale-i dərhal 1-ə qaytarıb en/hündürlüyü dəyişirik, mətn yenidən axır (Illustrator area type)
+  const handleTextTransform = (id: string, e: Konva.KonvaEventObject<Event>) => {
+    const node = e.target as Konva.Group
+    const sx = node.scaleX()
+    const sy = node.scaleY()
+    if (sx === 1 && sy === 1) return
+    const w = Math.max(24, node.width()  * sx)
+    const h = Math.max(16, node.height() * sy)
+    node.scaleX(1); node.scaleY(1)
+    node.width(w);  node.height(h)
+    updateElement(id, {
+      x: node.x(), y: node.y(),
+      width: w, height: h,
+      rotation: node.rotation(),
+      autoWidth: false,
+      scaleX: 1, scaleY: 1,
+    })
+  }
+
+  const handleTextTransformEnd = (id: string, e: Konva.KonvaEventObject<Event>) => {
+    handleTextTransform(id, e)
+    const node = e.target as Konva.Group
+    node.scaleX(1); node.scaleY(1)
+    updateElement(id, {
+      x: node.x(), y: node.y(),
+      width: node.width(), height: node.height(),
+      rotation: node.rotation(), autoWidth: false, scaleX: 1, scaleY: 1,
+    })
+    pushHistory()
   }
 
   const handleTransformEnd = (id: string, e: Konva.KonvaEventObject<Event>) => {
@@ -642,7 +700,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     },
     onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
       e.cancelBubble = true
-      if (el.type === 'text') startEditing(el)
+      if (el.type === 'text') startEditing(el.id)
     },
     onDragStart: () => handleDragStart(el.id),
     onDragEnd:   (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
@@ -672,63 +730,23 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         return <Arrow key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth} fill={d.stroke} pointerLength={12} pointerWidth={10} />
       case 'freehand':
         return <Line key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth} tension={0.5} lineCap="round" lineJoin="round" />
-      case 'text': {
-        const hasArea = Math.abs(d.width ?? 0) > 10 && Math.abs(d.height ?? 0) > 10
-        const textNode = <Text key={el.id + '_t'} {...cp}
-          x={d.x} y={d.y}
-          text={editingId===el.id?'':(d.text||'')}
-          fontSize={d.fontSize||20}
-          fill={d.fill||'#0f172a'}
-          fontFamily={d.fontFamily||'Arial'}
-          fontStyle={(d as any).fontStyle||'normal'}
-          textDecoration={(d as any).textDecoration||'none'}
-          align={(d as any).align||'left'}
-          letterSpacing={(d as any).letterSpacing||0}
-          lineHeight={(d as any).lineHeight||1.2}
-          rotation={d.rotation}
-          width={hasArea ? Math.abs(d.width!) : undefined}
-          wrap={hasArea ? 'word' : 'none'}
-        />
-        if (!hasArea) return textNode
-        // Area text — dashed border göstər
-        const aw = Math.abs(d.width!); const ah = Math.abs(d.height!)
+      case 'text':
         return (
-          <Group key={el.id} x={d.x} y={d.y} rotation={d.rotation ?? 0}
-            id={el.id}
-            draggable={tool === 'select'}
-            opacity={d.opacity ?? 1}
-            onClick={(e: Konva.KonvaEventObject<MouseEvent>) => { e.cancelBubble = true; handleElementClick(el, e) }}
-            onDblClick={(e: Konva.KonvaEventObject<MouseEvent>) => { e.cancelBubble = true; startEditing(el) }}
+          <RichTextShape
+            key={el.id}
+            el={el}
+            draggable={tool === 'select' && editingId !== el.id}
+            selected={selectedIds.includes(el.id)}
+            editing={editingId === el.id}
+            onSelect={(e) => { e.cancelBubble = true; handleElementClick(el, e) }}
+            onDblClick={(e) => { e.cancelBubble = true; startEditing(el.id) }}
             onDragStart={() => handleDragStart(el.id)}
-            onDragEnd={(e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e)}
-            onTransformEnd={(e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e)}
-            width={aw} height={ah}
-          >
-            <Rect width={aw} height={ah}
-              fill="transparent"
-              stroke="#a5b4fc"
-              strokeWidth={1}
-              dash={[4, 3]}
-              listening={false}
-            />
-            <Text
-              x={0} y={0}
-              text={editingId===el.id?'':(d.text||'')}
-              fontSize={d.fontSize||20}
-              fill={d.fill||'#0f172a'}
-              fontFamily={d.fontFamily||'Arial'}
-              fontStyle={(d as any).fontStyle||'normal'}
-              textDecoration={(d as any).textDecoration||'none'}
-              align={(d as any).align||'left'}
-              letterSpacing={(d as any).letterSpacing||0}
-              lineHeight={(d as any).lineHeight||1.2}
-              width={aw}
-              wrap="word"
-              listening={false}
-            />
-          </Group>
+            onDragEnd={(e) => handleDragEnd(el.id, e)}
+            onTransform={(e) => handleTextTransform(el.id, e)}
+            onTransformEnd={(e) => handleTextTransformEnd(el.id, e)}
+          />
         )
-      }
+
       case 'triangle':
       case 'pentagon':
       case 'hexagon': {
@@ -897,6 +915,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
               ? ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']
               : []
             }
+            keepRatio={false}
             boundBoxFunc={(oldBox, newBox) => (newBox.width < 5 || newBox.height < 5 ? oldBox : newBox)}
             ignoreStroke={true}
             shouldOverdrawWholeArea={false}
@@ -905,38 +924,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       </Stage>
 
       {editingId && editingEl && (
-        <textarea
-          ref={textareaRef}
-          defaultValue={editingEl.data.text || ''}
-          onBlur={finishEditing}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') { finishEditing(); return }
-            // Area text: Enter normal sətir keçidi, Escape bitir
-            // Klik text: Enter bitir
-            const hasArea = !!editPos.areaW
-            if (e.key === 'Enter' && !e.shiftKey && !hasArea) { e.preventDefault(); finishEditing() }
-          }}
-          style={{
-            position: 'fixed', top: editPos.y, left: editPos.x,
-            fontSize: (editingEl.data.fontSize ?? 20) * editPos.scale,
-            fontFamily: editingEl.data.fontFamily ?? 'Arial',
-            fontStyle: (editingEl.data as any).fontStyle ?? 'normal',
-            textDecoration: (editingEl.data as any).textDecoration ?? 'none',
-            textAlign: (editingEl.data as any).align ?? 'left',
-            letterSpacing: ((editingEl.data as any).letterSpacing ?? 0) + 'px',
-            lineHeight: (editingEl.data as any).lineHeight ?? 1.2,
-            color: editingEl.data.fill ?? '#0f172a',
-            background: 'rgba(255,255,255,0.97)', border: '2px solid #4f46e5',
-            borderRadius: 4, padding: '2px 6px', outline: 'none',
-            width:  editPos.areaW ? editPos.areaW + 'px' : undefined,
-            height: editPos.areaH ? editPos.areaH + 'px' : undefined,
-            minWidth: editPos.areaW ? undefined : 100,
-            minHeight: editPos.areaW ? undefined : 32,
-            resize: editPos.areaW ? 'none' : 'both',
-            overflowY: editPos.areaW ? 'auto' : 'hidden',
-            boxSizing: 'border-box',
-            zIndex: 9999, boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
-          }}
+        <RichTextEditor
+          key={editingId}
+          el={editingEl}
+          left={editPos.x}
+          top={editPos.y}
+          scale={editPos.scale}
+          areaW={editPos.areaW}
+          areaH={editPos.areaH}
+          onChange={(runs) => handleRunsChange(editingId, runs)}
+          onFinish={finishEditing}
         />
       )}
     </div>

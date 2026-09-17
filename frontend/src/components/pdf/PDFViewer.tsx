@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
-import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RefreshCw } from 'lucide-react'
 import { booksApi } from '../../api/books'
 import { useBookStore } from '../../store/bookStore'
 import type { Annotation } from '../../types'
@@ -29,24 +29,36 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
   const [selectionRect, setSelectionRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const [pdfBlob,       setPdfBlob]       = useState<string | null>(null)
   const [inputPage,     setInputPage]     = useState(String(currentPage))
+  const [loadError,     setLoadError]     = useState<string | null>(null)
+  const [fetching,      setFetching]      = useState(false)
 
   const startPos = useRef<{ x: number; y: number } | null>(null)
   const pageRef  = useRef<HTMLDivElement>(null)
 
-  // PDF-i token ilə yüklə
-  useEffect(() => {
+  const fetchPdf = useCallback(() => {
     if (!fileUrl) return
+    setLoadError(null)
+    setFetching(true)
+    setPdfBlob(null)
     const token = localStorage.getItem('access_token')
     fetch(fileUrl, { headers: { Authorization: `Bearer ${token}` } })
       .then((res) => {
-        if (!res.ok) throw new Error('PDF yüklənmədi')
+        if (!res.ok) throw new Error(`Server xətası: ${res.status}`)
         return res.blob()
       })
-      .then((blob) => setPdfBlob(URL.createObjectURL(blob)))
-      .catch((err) => console.error('PDF fetch:', err))
+      .then((blob) => {
+        if (blob.size === 0) throw new Error('PDF faylı boşdur')
+        setPdfBlob(URL.createObjectURL(blob))
+      })
+      .catch((err) => {
+        console.error('PDF fetch:', err)
+        setLoadError(err.message || 'PDF yüklənmədi')
+      })
+      .finally(() => setFetching(false))
   }, [fileUrl])
 
-  // Annotationları yüklə
+  useEffect(() => { fetchPdf() }, [fetchPdf])
+
   useEffect(() => {
     if (!bookId) return
     booksApi.getAnnotations(bookId)
@@ -61,7 +73,7 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
     setCurrentPage(clamped)
     setInputPage(String(clamped))
     booksApi.updateBookmark(bookId, clamped).catch(() => {})
-  }, [numPages, bookId])
+  }, [numPages, bookId, setCurrentPage])
 
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!pageRef.current) return
@@ -112,7 +124,7 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
 
   const pageAnnotations = annotations.filter((a) => a.page_number === currentPage)
 
-  if (!pdfBlob) {
+  if (fetching) {
     return (
       <div className="flex h-full items-center justify-center bg-gray-50">
         <div className="text-gray-400 text-sm">PDF yüklənir...</div>
@@ -120,11 +132,27 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
     )
   }
 
+  if (loadError) {
+    return (
+      <div className="flex h-full items-center justify-center bg-gray-50">
+        <div className="text-center p-6">
+          <p className="text-red-500 text-sm mb-1">PDF açıla bilmədi</p>
+          <p className="text-gray-400 text-xs mb-4">{loadError}</p>
+          <button
+            onClick={fetchPdf}
+            className="flex items-center gap-2 mx-auto px-4 py-2 bg-indigo-500 text-white text-sm rounded-lg hover:bg-indigo-600 transition-colors"
+          >
+            <RefreshCw size={14} />
+            Yenidən cəhd et
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full bg-gray-50">
-      {/* Controls */}
       <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
-        {/* Rəng seçici */}
         <div className="flex gap-1">
           {HIGHLIGHT_COLORS.map((c) => (
             <button
@@ -138,7 +166,6 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
           ))}
         </div>
         <div className="flex-1" />
-        {/* Zoom */}
         <button onClick={() => setScale((s) => Math.max(s - 0.2, 0.5))}
           className="p-1 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-all">
           <ZoomOut size={16} />
@@ -149,7 +176,6 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
           <ZoomIn size={16} />
         </button>
         <div className="w-px h-4 bg-gray-200 mx-1" />
-        {/* Səhifə naviqasiyası */}
         <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1}
           className="p-1 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 disabled:opacity-30 transition-all">
           <ChevronLeft size={16} />
@@ -170,59 +196,64 @@ export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
         </button>
       </div>
 
-      {/* PDF Content */}
       <div className="flex-1 overflow-auto flex justify-center py-4 px-2 bg-gray-100">
-        <Document
-          file={pdfBlob}
-          onLoadSuccess={({ numPages }) => setNumPages(numPages)}
-          loading={<div className="text-gray-400 text-sm mt-8">Yüklənir...</div>}
-          error={<div className="text-red-500 text-sm mt-8">PDF açıla bilmədi</div>}
-        >
-          <div
-            ref={pageRef}
-            className="relative select-none shadow-lg"
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
+        {pdfBlob && (
+          <Document
+            file={pdfBlob}
+            onLoadSuccess={({ numPages }) => setNumPages(numPages)}
+            onLoadError={(err) => {
+              console.error('PDF render xətası:', err)
+              setLoadError('PDF render edilə bilmədi')
+              setPdfBlob(null)
+            }}
+            loading={<div className="text-gray-400 text-sm mt-8">Render olunur...</div>}
           >
-            <Page
-              pageNumber={currentPage}
-              scale={scale}
-              renderTextLayer={true}
-              renderAnnotationLayer={false}
-              loading={
-                <div className="bg-white flex items-center justify-center"
-                  style={{ width: 595 * scale, height: 842 * scale }}>
-                  <span className="text-gray-400 text-sm">Yüklənir...</span>
-                </div>
-              }
-            />
-            {pageAnnotations.map((ann) => (
-              <div
-                key={ann.id}
-                onDoubleClick={() => deleteAnnotation(ann.id)}
-                title="Çift klik: sil"
-                className="absolute rounded cursor-pointer hover:opacity-70 transition-opacity"
-                style={{
-                  left: ann.x * scale, top: ann.y * scale,
-                  width: ann.width * scale, height: ann.height * scale,
-                  background: ann.color, opacity: 0.4,
-                }}
+            <div
+              ref={pageRef}
+              className="relative select-none shadow-lg"
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+            >
+              <Page
+                pageNumber={currentPage}
+                scale={scale}
+                renderTextLayer={true}
+                renderAnnotationLayer={false}
+                loading={
+                  <div className="bg-white flex items-center justify-center"
+                    style={{ width: 595 * scale, height: 842 * scale }}>
+                    <span className="text-gray-400 text-sm">Yüklənir...</span>
+                  </div>
+                }
               />
-            ))}
-            {selectionRect && (
-              <div
-                className="absolute pointer-events-none rounded"
-                style={{
-                  left: selectionRect.x, top: selectionRect.y,
-                  width: selectionRect.w, height: selectionRect.h,
-                  background: selectedColor, opacity: 0.4,
-                  border: `2px solid ${selectedColor}`,
-                }}
-              />
-            )}
-          </div>
-        </Document>
+              {pageAnnotations.map((ann) => (
+                <div
+                  key={ann.id}
+                  onDoubleClick={() => deleteAnnotation(ann.id)}
+                  title="Çift klik: sil"
+                  className="absolute rounded cursor-pointer hover:opacity-70 transition-opacity"
+                  style={{
+                    left: ann.x * scale, top: ann.y * scale,
+                    width: ann.width * scale, height: ann.height * scale,
+                    background: ann.color, opacity: 0.4,
+                  }}
+                />
+              ))}
+              {selectionRect && (
+                <div
+                  className="absolute pointer-events-none rounded"
+                  style={{
+                    left: selectionRect.x, top: selectionRect.y,
+                    width: selectionRect.w, height: selectionRect.h,
+                    background: selectedColor, opacity: 0.4,
+                    border: `2px solid ${selectedColor}`,
+                  }}
+                />
+              )}
+            </div>
+          </Document>
+        )}
       </div>
     </div>
   )

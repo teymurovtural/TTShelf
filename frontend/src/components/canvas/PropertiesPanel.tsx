@@ -1,5 +1,5 @@
 import { useCanvasStore } from '../../store/canvasStore'
-import type { ElementData } from '../../types'
+import type { ElementData, TextRun } from '../../types'
 
 const PRESET_FILLS = [
   'transparent',
@@ -80,6 +80,19 @@ export default function PropertiesPanel() {
   const isImage  = el.type === 'image'
 
   const update = (patch: Partial<ElementData>) => updateElement(el.id, patch)
+
+  // Mətn üçün: dəyişiklik BÜTÜN mətnə tətbiq olunur.
+  // Bunun üçün run-lardakı fərdi override-ları silirik ki element səviyyəsindəki dəyər işləsin.
+  // (Bir hissəni ayrıca dəyişmək üçün mətnə iki dəfə klikləyib üzən paneldən istifadə edin.)
+  const updateTextAll = (patch: Partial<ElementData>, runKeys: (keyof TextRun)[]) => {
+    const runs = d.runs as TextRun[] | undefined
+    const cleaned = runs?.map((r) => {
+      const c: TextRun = { ...r }
+      runKeys.forEach((k) => { delete (c as any)[k] })
+      return c
+    })
+    updateElement(el.id, { ...patch, ...(cleaned ? { runs: cleaned } : {}) })
+  }
 
   return (
     <div className="w-56 border-r border-gray-200 bg-white overflow-y-auto shrink-0" style={{order: -1}}>
@@ -222,14 +235,14 @@ export default function PropertiesPanel() {
             const next = bold
               ? cur.replace('bold', '').trim() || 'normal'
               : (cur === 'normal' ? 'bold' : cur + ' bold')
-            update({ fontStyle: next } as any)
+            updateTextAll({ fontStyle: next } as any, ['fontStyle'])
           }
           const toggleItalic = () => {
             const cur = (d as any).fontStyle ?? 'normal'
             const next = italic
               ? cur.replace('italic', '').trim() || 'normal'
               : (cur === 'normal' ? 'italic' : cur + ' italic')
-            update({ fontStyle: next } as any)
+            updateTextAll({ fontStyle: next } as any, ['fontStyle'])
           }
 
           const FONTS = [
@@ -244,7 +257,7 @@ export default function PropertiesPanel() {
               <Section title="Font">
                 <select
                   value={fontFamily}
-                  onChange={(e) => update({ fontFamily: e.target.value })}
+                  onChange={(e) => updateTextAll({ fontFamily: e.target.value }, ['fontFamily'])}
                   className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-indigo-400 bg-white"
                   style={{ fontFamily }}
                 >
@@ -262,7 +275,7 @@ export default function PropertiesPanel() {
                     type="number"
                     value={fontSize}
                     min={6} max={400}
-                    onChange={(e) => update({ fontSize: parseInt(e.target.value) || 20 })}
+                    onChange={(e) => updateTextAll({ fontSize: parseInt(e.target.value) || 20 }, ['fontSize'])}
                     className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-indigo-400 text-center"
                   />
                   <span className="text-xs text-gray-400">px</span>
@@ -285,7 +298,7 @@ export default function PropertiesPanel() {
                   >I</button>
                   {/* Underline */}
                   <button
-                    onClick={() => update({ textDecoration: underline ? 'none' : 'underline' } as any)}
+                    onClick={() => updateTextAll({ textDecoration: underline ? 'none' : 'underline' } as any, ['textDecoration'])}
                     title="Altından xətt (Ctrl+U)"
                     className={`w-7 h-7 rounded-lg text-sm underline border transition-all ${
                       underline ? 'bg-indigo-600 text-white border-indigo-600' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
@@ -298,7 +311,7 @@ export default function PropertiesPanel() {
                   {[10,12,14,16,18,20,24,28,32,36,48,64].map((s) => (
                     <button
                       key={s}
-                      onClick={() => update({ fontSize: s })}
+                      onClick={() => updateTextAll({ fontSize: s }, ['fontSize'])}
                       className={`px-1.5 py-0.5 text-[10px] rounded border transition-all ${
                         fontSize === s
                           ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
@@ -397,23 +410,85 @@ export default function PropertiesPanel() {
               <Section title="Mətn rəngi">
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {PRESET_STROKES.map((c) => (
-                    <ColorSwatch key={c} color={c} selected={fill === c} onClick={() => update({ fill: c })} />
+                    <ColorSwatch key={c} color={c} selected={fill === c} onClick={() => updateTextAll({ fill: c }, ['fill'])} />
                   ))}
                 </div>
                 <div className="flex items-center gap-2">
                   <input
                     type="color"
                     value={fill === 'transparent' || !fill ? '#000000' : fill}
-                    onChange={(e) => update({ fill: e.target.value })}
+                    onChange={(e) => updateTextAll({ fill: e.target.value }, ['fill'])}
                     className="w-8 h-7 rounded-lg border border-gray-200 cursor-pointer p-0.5"
                   />
                   <input
                     type="text"
                     value={fill || '#000000'}
-                    onChange={(e) => update({ fill: e.target.value })}
+                    onChange={(e) => updateTextAll({ fill: e.target.value }, ['fill'])}
                     className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 outline-none focus:border-indigo-400 font-mono"
                   />
                 </div>
+              </Section>
+
+              {/* Mətn qutusu */}
+              <Section title="Mətn qutusu">
+                <div className="flex gap-1 mb-2">
+                  <button
+                    onClick={() => update({ autoWidth: true, width: 0, height: 0 } as any)}
+                    className={`flex-1 py-1.5 text-[11px] rounded-lg border transition-all ${
+                      (d as any).autoWidth !== false
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >Avtomatik en</button>
+                  <button
+                    onClick={() => update({
+                      autoWidth: false,
+                      width: Math.max(Math.abs(d.width ?? 0), 240),
+                      height: Math.max(Math.abs(d.height ?? 0), 120),
+                    } as any)}
+                    className={`flex-1 py-1.5 text-[11px] rounded-lg border transition-all ${
+                      (d as any).autoWidth === false
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >Sabit qutu</button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { label: 'X', key: 'x' },
+                    { label: 'Y', key: 'y' },
+                    ...((d as any).autoWidth === false
+                      ? [{ label: 'En', key: 'width' }, { label: 'Hünd.', key: 'height' }]
+                      : []),
+                  ].map(({ label, key }) => (
+                    <div key={key}>
+                      <p className="text-[10px] text-gray-400 mb-1">{label}</p>
+                      <input
+                        type="number"
+                        value={Math.round((d as any)[key] ?? 0)}
+                        onChange={(e) => update({ [key]: parseFloat(e.target.value) || 0 })}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-indigo-400"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <p className="text-[10px] text-gray-400 mt-2">Dönmə</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range" min={-180} max={180} step={1}
+                    value={d.rotation ?? 0}
+                    onChange={(e) => update({ rotation: parseFloat(e.target.value) })}
+                    className="flex-1 accent-indigo-600"
+                  />
+                  <span className="text-xs text-gray-500 w-10 text-right">{Math.round(d.rotation ?? 0)}°</span>
+                </div>
+
+                <p className="text-[10px] text-gray-400 mt-2 leading-relaxed">
+                  Mətnin yalnız bir hissəsini dəyişmək üçün mətnə iki dəfə klikləyin,
+                  hissəni seçin və üstdə açılan paneldən rəng/şrift/ölçü seçin.
+                </p>
               </Section>
             </>
           )

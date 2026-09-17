@@ -1,0 +1,134 @@
+services:
+
+  # ---- Infrastructure ----
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ttshelf_db
+    restart: unless-stopped
+    ports:
+      - "5438:5432"
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - ttshelf_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ttshelf_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: ttshelf_redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - ttshelf_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ttshelf_net
+
+  minio:
+    image: minio/minio:latest
+    container_name: ttshelf_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    ports:
+      - "9010:9000"
+      - "9011:9001"
+    volumes:
+      - ttshelf_miniodata:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ttshelf_net
+
+  # ---- Backend ----
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ttshelf_backend
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      APP_ENV: development
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_URL: http://localhost/minio
+      ALLOWED_ORIGINS: http://localhost
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - ttshelf_net
+
+  # ---- Frontend ----
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
+    container_name: ttshelf_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - ttshelf_net
+
+  # ---- Nginx ----
+
+  nginx:
+    image: nginx:alpine
+    container_name: ttshelf_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - ttshelf_net
+
+volumes:
+  ttshelf_pgdata:
+  ttshelf_redisdata:
+  ttshelf_miniodata:
+
+networks:
+  ttshelf_net:
+    driver: bridge

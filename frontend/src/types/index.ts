@@ -83,6 +83,16 @@ export type ElementType =
     | 'cylinder'
     | 'cross'
 
+// Mətnin bir hissəsi — öz rəngi/fontu/ölçüsü ola bilər
+export interface TextRun {
+    text: string
+    fill?: string
+    fontFamily?: string
+    fontSize?: number
+    fontStyle?: string
+    textDecoration?: string
+}
+
 export interface ElementData {
     x?: number
     y?: number
@@ -111,6 +121,12 @@ export interface ElementData {
     align?: 'left' | 'center' | 'right'
     letterSpacing?: number
     lineHeight?: number
+    // ---- mətn ----
+    runs?: TextRun[]        // zəngin mətn: hissə-hissə stil
+    autoWidth?: boolean     // true → nöqtə mətni (en avtomatik), false → area mətni
+    // ---- qruplaşdırma ----
+    groupId?: string
+    [key: string]: any
 }
 
 export interface CanvasElement {
