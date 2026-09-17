@@ -103,7 +103,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
   const [stagePos,   setStagePos]   = useState({ x: 0, y: 0 })
   const [stageScale, setStageScale] = useState(1)
   const [editingId,  setEditingId]  = useState<string | null>(null)
-  const [editPos,    setEditPos]    = useState({ x: 0, y: 0, scale: 1 })
+  const [editPos,    setEditPos]    = useState({ x: 0, y: 0, scale: 1, areaW: undefined as number|undefined, areaH: undefined as number|undefined })
   const [isSpacePan, setIsSpacePan] = useState(false)
 
   // Rubber band selection state
@@ -134,22 +134,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     const stage = stageRef.current
     if (!tr || !stage) return
 
-    if (selectedIds.length === 1 && !editingId) {
-      const node = stage.findOne(`#${selectedIds[0]}`)
-      if (node) {
-        // Stage pozisiyasını saxla
+    if (selectedIds.length >= 1 && !editingId) {
+      const nodes = selectedIds
+        .map((sid) => stage.findOne(`#${sid}`))
+        .filter(Boolean) as Konva.Node[]
+      if (nodes.length > 0) {
         const px = stage.x(); const py = stage.y()
         const sx = stage.scaleX(); const sy = stage.scaleY()
-        tr.nodes([node])
-        // Dərhal bərpa et
+        tr.nodes(nodes)
         stage.x(px); stage.y(py)
         stage.scaleX(sx); stage.scaleY(sy)
         stage.batchDraw()
         return
       }
     }
-    // Multi-select və ya boş — transformer söndür
-    tr.nodes([])
     tr.getLayer()?.batchDraw()
   }, [selectedIds, editingId, elements])
 
@@ -284,8 +282,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     if (!node) return
     const stageBox = stage.container().getBoundingClientRect()
     const absPos   = node.getAbsolutePosition()
+    const hasArea  = Math.abs(el.data.width ?? 0) > 10 && Math.abs(el.data.height ?? 0) > 10
     setEditingId(el.id)
-    setEditPos({ x: stageBox.left + absPos.x, y: stageBox.top + absPos.y, scale: stageScaleRef.current })
+    setEditPos({
+      x: stageBox.left + absPos.x,
+      y: stageBox.top  + absPos.y,
+      scale: stageScaleRef.current,
+      areaW: hasArea ? Math.abs(el.data.width!)  * stageScaleRef.current : undefined,
+      areaH: hasArea ? Math.abs(el.data.height!) * stageScaleRef.current : undefined,
+    })
     node.hide()
     transformerRef.current?.hide()
     transformerRef.current?.getLayer()?.batchDraw()
@@ -309,16 +314,33 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
   const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (isSpaceDown.current) return
     if (editingId) { finishEditing(); return }
-    if (tool === 'pan') return
+
+    // Pan aləti — stage-i birbaşa sürüşdür
+    if (tool === 'pan') {
+      isPanning.current  = true
+      lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY }
+      return
+    }
+
+    // Text aləti aktiv olanda mövcud text elementinə klikləndikdə — düzəliş et
+    if (tool === 'text' && e.target !== stageRef.current && e.target.getType() !== 'Stage') {
+      const clickedId = e.target.id() || e.target.getParent()?.id()
+      const clickedEl = clickedId ? elementsRef.current.find((el) => el.id === clickedId) : null
+      if (clickedEl && clickedEl.type === 'text') {
+        e.cancelBubble = true
+        setSelectedIds([clickedEl.id])
+        setTimeout(() => startEditing(clickedEl), 30)
+        return
+      }
+    }
 
 
 
     const pos      = getPointerOnStage()
-    const isStage  = e.target === e.target.getStage()
+    const isStage = e.target === stageRef.current || e.target.getType() === 'Stage'
 
     if (tool === 'select') {
       if (isStage) {
-        // Boş yerdə rubber band başlat
         setSelectedIds([])
         selStart.current = pos
         selBoxRef.current = { x: pos.x, y: pos.y, w: 0, h: 0 }
@@ -352,24 +374,28 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     } else if (tool === 'freehand') {
       data = { points: [pos.x, pos.y], ...SHAPE_DEFAULTS.freehand, lineCap: 'round', lineJoin: 'round' }
     } else if (tool === 'text') {
-      data = { x: pos.x, y: pos.y, text: '', ...SHAPE_DEFAULTS.text }
-      isDrawing.current = false; drawingId.current = null
-      const newEl: CanvasElement = {
-        id, canvas_id: '', type: 'text', data,
-        z_index: elements.length,
-        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      }
-      addElement(newEl)
-      setSelectedIds([id])
-      setTool('select')
-      setTimeout(() => startEditing(newEl), 50)
-      return
+      // Text tool: mouseDown-da yalnız başlanğıc nöqtəni saxla
+      // mouseUp-da ölçüyə görə area və ya klik text yaradılır
+      isDrawing.current = true
+      drawingId.current = id
+      data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.text, text: '' }
     }
 
     addElement({ id, canvas_id: '', type: tool, data, z_index: elements.length, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
   }
 
   const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Pan aləti — stage sürüşdür
+    if (tool === 'pan' && isPanning.current) {
+      const dx = e.evt.clientX - lastPanPos.current.x
+      const dy = e.evt.clientY - lastPanPos.current.y
+      lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY }
+      const newPos = { x: stagePosRef.current.x + dx, y: stagePosRef.current.y + dy }
+      stagePosRef.current = newPos
+      setStagePos({ ...newPos })
+      return
+    }
+
     const pos = getPointerOnStage()
 
     // Rubber band — yalnız select alətində
@@ -389,7 +415,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     const el = elements.find((el) => el.id === drawingId.current)
     if (!el) return
 
-    if (['rect','circle','diamond','parallelogram','cross','cylinder'].includes(tool)) {
+    if (tool === 'text') {
+      const w = pos.x - (el.data.x || 0)
+      const h = pos.y - (el.data.y || 0)
+      updateElement(drawingId.current, { width: w, height: h })
+    } else if (['rect','circle','diamond','parallelogram','cross','cylinder'].includes(tool)) {
       let w = pos.x - (el.data.x || 0)
       let h = pos.y - (el.data.y || 0)
       if (isShiftDown.current) {
@@ -424,6 +454,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
   }
 
   const handleMouseUp = () => {
+    if (tool === 'pan') { isPanning.current = false; return }
     // Rubber band bitdi — içindəki elementləri seç
     if (selStart.current) {
       const currentBox = selBoxRef.current
@@ -431,9 +462,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         const { x, y, w, h } = currentBox
         const inside = elementsRef.current.filter((el) => {
           const bb = getElBBox(el)
-          return bb.x >= x && bb.y >= y &&
-                 (bb.x + bb.w) <= (x + w) &&
-                 (bb.y + bb.h) <= (y + h)
+          // Tam içəridə deyil, toxunsa da seç (intersects)
+          return bb.x < x + w && bb.x + bb.w > x &&
+                 bb.y < y + h && bb.y + bb.h > y
         }).map((el) => el.id)
         setSelectedIds(inside)
       } else {
@@ -448,6 +479,31 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
     if (!isDrawing.current || !drawingId.current) return
     isDrawing.current = false
+
+    // Text tool: area > 10px olarsa area text, kiçik olarsa klik text
+    const currentEl = elementsRef.current.find((e) => e.id === drawingId.current)
+    if (currentEl && currentEl.type === 'text') {
+      const w = Math.abs(currentEl.data.width ?? 0)
+      const h = Math.abs(currentEl.data.height ?? 0)
+      if (w > 10 && h > 10) {
+        // Area text — ölçü saxlanır, wrap işləyir
+        setSelectedIds([drawingId.current])
+        const id = drawingId.current
+        drawingId.current = null
+        setTool('select')
+        setTimeout(() => startEditing(currentEl), 50)
+      } else {
+        // Klik text — width/height sıfırla (auto-size)
+        updateElement(drawingId.current, { width: 0, height: 0 })
+        setSelectedIds([drawingId.current])
+        const id = drawingId.current
+        drawingId.current = null
+        setTool('select')
+        setTimeout(() => startEditing(currentEl), 50)
+      }
+      return
+    }
+
     setSelectedIds([drawingId.current])
     drawingId.current = null
     setTool('select')
@@ -527,37 +583,19 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       return
     }
 
-    const isCenteredPath = ['triangle','pentagon','hexagon','star','cross','parallelogram','cylinder','diamond'].includes(el.type)
+    const isPathShape = ['triangle','pentagon','hexagon','star','cross','parallelogram','cylinder','diamond'].includes(el.type)
 
-    if (isCenteredPath) {
-      // Path/Group shape-lər üçün: scale-i width-ə çevir
-      const sx = node.scaleX(); const sy = node.scaleY()
-      const oldW = Math.abs(el.data.width ?? 0)
+    if (isPathShape) {
+      const sx   = node.scaleX(); const sy = node.scaleY()
+      const oldW = Math.abs(el.data.width  ?? 0)
       const oldH = Math.abs(el.data.height ?? 0)
-      const newW = oldW * Math.abs(sx)
-      const newH = oldH * Math.abs(sy)
-
-      const isCentered = ['triangle','pentagon','hexagon','star'].includes(el.type)
-      if (isCentered) {
-        // Mərkəz koordinat — x/y mərkəzdir, ölçü dəyişəndə yenilə
-        updateElement(id, {
-          x: node.x(),
-          y: node.y(),
-          width: newW,
-          height: newW, // simmetrik saxla
-          rotation: node.rotation(),
-          scaleX: 1, scaleY: 1,
-        })
-      } else {
-        updateElement(id, {
-          x: node.x(),
-          y: node.y(),
-          width: newW,
-          height: newH,
-          rotation: node.rotation(),
-          scaleX: 1, scaleY: 1,
-        })
-      }
+      updateElement(id, {
+        x: node.x(), y: node.y(),
+        width:    oldW * Math.abs(sx),
+        height:   oldH * Math.abs(sy),
+        rotation: node.rotation(),
+        scaleX: 1, scaleY: 1,
+      })
       node.scaleX(1); node.scaleY(1)
       return
     }
@@ -634,80 +672,152 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         return <Arrow key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth} fill={d.stroke} pointerLength={12} pointerWidth={10} />
       case 'freehand':
         return <Line key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth} tension={0.5} lineCap="round" lineJoin="round" />
-      case 'text':
-        return <Text key={el.id} {...cp} x={d.x} y={d.y}
-          text={editingId===el.id?'':(d.text||'')} fontSize={d.fontSize||20}
-          fill={d.fill||'#0f172a'} fontFamily={d.fontFamily||'Arial'} rotation={d.rotation} />
-      case 'triangle':
-      case 'pentagon':
-      case 'hexagon': {
-        const sides = el.type === 'triangle' ? 3 : el.type === 'pentagon' ? 5 : 6
-        const radius = Math.abs(d.width??0) / 2
-        const cr = (d.cornerRadius as any) ?? 0
-        const pts = regularPolygonPoints(sides, radius, 0, 0)
-        const pathData = roundedPolygonPath(pts, cr)
-        return <Path key={el.id} {...cp}
-          x={d.x??0} y={d.y??0}
-          data={pathData}
-          fill={d.fill==='transparent'?undefined:d.fill}
-          stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={(d.rotation??0)} />
-      }
-
-      case 'star': {
-        const outerR = Math.abs(d.width??0) / 2
-        const cr = (d.cornerRadius as any) ?? 0
-        const pts = starPoints(5, outerR, outerR * 0.45, 0, 0)
-        const pathData = roundedPolygonPath(pts, cr)
-        return <Path key={el.id} {...cp}
-          x={d.x??0} y={d.y??0}
-          data={pathData}
-          fill={d.fill==='transparent'?undefined:d.fill}
-          stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={(d.rotation??0)} />
-      }
-
-      case 'diamond':
-        return <Rect key={el.id} {...cp}
-          x={(d.x??0) + Math.abs(d.width??0)/2} y={d.y}
-          width={Math.abs(d.width??0)} height={Math.abs(d.height??0)}
-          offsetX={Math.abs(d.width??0)/2}
-          fill={d.fill==='transparent'?undefined:d.fill}
-          stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={(d.rotation??0) + 45}
-          cornerRadius={d.cornerRadius as any ?? 0}
-          scaleX={0.7} />
-
-      case 'parallelogram': {
-        const pw = Math.abs(d.width??0); const ph = Math.abs(d.height??0)
-        const fill = d.fill==='transparent'?undefined:d.fill
-        const stroke = d.stroke==='transparent'?undefined:d.stroke
+      case 'text': {
+        const hasArea = Math.abs(d.width ?? 0) > 10 && Math.abs(d.height ?? 0) > 10
+        const textNode = <Text key={el.id + '_t'} {...cp}
+          x={d.x} y={d.y}
+          text={editingId===el.id?'':(d.text||'')}
+          fontSize={d.fontSize||20}
+          fill={d.fill||'#0f172a'}
+          fontFamily={d.fontFamily||'Arial'}
+          fontStyle={(d as any).fontStyle||'normal'}
+          textDecoration={(d as any).textDecoration||'none'}
+          align={(d as any).align||'left'}
+          letterSpacing={(d as any).letterSpacing||0}
+          lineHeight={(d as any).lineHeight||1.2}
+          rotation={d.rotation}
+          width={hasArea ? Math.abs(d.width!) : undefined}
+          wrap={hasArea ? 'word' : 'none'}
+        />
+        if (!hasArea) return textNode
+        // Area text — dashed border göstər
+        const aw = Math.abs(d.width!); const ah = Math.abs(d.height!)
         return (
-          <Group key={el.id} {...cp} x={d.x??0} y={d.y??0} rotation={d.rotation??0}>
-            <Rect
-              x={pw * 0.2} y={0}
-              width={pw * 0.8} height={ph}
-              skewX={-0.35}
-              fill={fill} stroke={stroke}
-              strokeWidth={d.strokeWidth}
-              cornerRadius={d.cornerRadius as any ?? 0}
+          <Group key={el.id} x={d.x} y={d.y} rotation={d.rotation ?? 0}
+            id={el.id}
+            draggable={tool === 'select'}
+            opacity={d.opacity ?? 1}
+            onClick={(e: Konva.KonvaEventObject<MouseEvent>) => { e.cancelBubble = true; handleElementClick(el, e) }}
+            onDblClick={(e: Konva.KonvaEventObject<MouseEvent>) => { e.cancelBubble = true; startEditing(el) }}
+            onDragStart={() => handleDragStart(el.id)}
+            onDragEnd={(e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e)}
+            onTransformEnd={(e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e)}
+            width={aw} height={ah}
+          >
+            <Rect width={aw} height={ah}
+              fill="transparent"
+              stroke="#a5b4fc"
+              strokeWidth={1}
+              dash={[4, 3]}
+              listening={false}
+            />
+            <Text
+              x={0} y={0}
+              text={editingId===el.id?'':(d.text||'')}
+              fontSize={d.fontSize||20}
+              fill={d.fill||'#0f172a'}
+              fontFamily={d.fontFamily||'Arial'}
+              fontStyle={(d as any).fontStyle||'normal'}
+              textDecoration={(d as any).textDecoration||'none'}
+              align={(d as any).align||'left'}
+              letterSpacing={(d as any).letterSpacing||0}
+              lineHeight={(d as any).lineHeight||1.2}
+              width={aw}
+              wrap="word"
+              listening={false}
             />
           </Group>
         )
+      }
+      case 'triangle':
+      case 'pentagon':
+      case 'hexagon': {
+        const sides  = el.type === 'triangle' ? 3 : el.type === 'pentagon' ? 5 : 6
+        const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
+        const cr = (d.cornerRadius as any) ?? 0
+        const rx = w / 2; const ry = h / 2
+        const pts: number[][] = []
+        for (let i = 0; i < sides; i++) {
+          const angle = (Math.PI * 2 * i / sides) - Math.PI / 2
+          pts.push([rx + rx * Math.cos(angle), ry + ry * Math.sin(angle)])
+        }
+        const pathData = roundedPolygonPath(pts, cr)
+        return <Path key={el.id} {...cp}
+          x={d.x ?? 0} y={d.y ?? 0}
+          data={pathData}
+          fill={d.fill==='transparent'?undefined:d.fill}
+          stroke={d.stroke==='transparent'?undefined:d.stroke}
+          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
+          hitFunc={(ctx: any, shape: any) => {
+            ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
+            ctx.fillStrokeShape(shape)
+          }} />
+      }
+
+      case 'star': {
+        const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
+        const cr = (d.cornerRadius as any) ?? 0
+        const outerRx = w / 2; const outerRy = h / 2
+        const innerRx = outerRx * 0.45; const innerRy = outerRy * 0.45
+        const pts: number[][] = []
+        for (let i = 0; i < 10; i++) {
+          const angle = (Math.PI * i / 5) - Math.PI / 2
+          const rx = i % 2 === 0 ? outerRx : innerRx
+          const ry = i % 2 === 0 ? outerRy : innerRy
+          pts.push([outerRx + rx * Math.cos(angle), outerRy + ry * Math.sin(angle)])
+        }
+        const pathData = roundedPolygonPath(pts, cr)
+        return <Path key={el.id} {...cp}
+          x={d.x ?? 0} y={d.y ?? 0}
+          data={pathData}
+          fill={d.fill==='transparent'?undefined:d.fill}
+          stroke={d.stroke==='transparent'?undefined:d.stroke}
+          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
+          hitFunc={(ctx: any, shape: any) => {
+            ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
+            ctx.fillStrokeShape(shape)
+          }} />
+      }
+
+      case 'diamond': {
+        const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
+        const pathData = `M ${w/2} 0 L ${w} ${h/2} L ${w/2} ${h} L 0 ${h/2} Z`
+        return <Path key={el.id} {...cp}
+          x={d.x ?? 0} y={d.y ?? 0}
+          data={pathData}
+          fill={d.fill==='transparent'?undefined:d.fill}
+          stroke={d.stroke==='transparent'?undefined:d.stroke}
+          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
+          hitFunc={(ctx: any, shape: any) => {
+            ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
+            ctx.fillStrokeShape(shape)
+          }} />
+      }
+
+      case 'parallelogram': {
+        const pw = Math.abs(d.width ?? 0); const ph = Math.abs(d.height ?? 0)
+        const skew = pw * 0.25
+        const pathData = `M ${skew} 0 L ${pw} 0 L ${pw - skew} ${ph} L 0 ${ph} Z`
+        return <Path key={el.id} {...cp}
+          x={d.x ?? 0} y={d.y ?? 0}
+          data={pathData}
+          fill={d.fill==='transparent'?undefined:d.fill}
+          stroke={d.stroke==='transparent'?undefined:d.stroke}
+          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
+          hitFunc={(ctx: any, shape: any) => {
+            ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.closePath()
+            ctx.fillStrokeShape(shape)
+          }} />
       }
 
       case 'cross': {
         const cw = Math.abs(d.width??0); const ch = Math.abs(d.height??0)
         const t = cw/3; const t2 = ch/3
         const cr = (d.cornerRadius as any) ?? 0
-        // Cross-u rounded polygon path ilə çək
         const crossPts = [
-          [t, 0], [cw-t, 0],
-          [cw-t, t2], [cw, t2],
-          [cw, ch-t2], [cw-t, ch-t2],
-          [cw-t, ch], [t, ch],
-          [t, ch-t2], [0, ch-t2],
-          [0, t2], [t, t2],
+          [t, 0], [cw-t, 0], [cw-t, t2], [cw, t2],
+          [cw, ch-t2], [cw-t, ch-t2], [cw-t, ch], [t, ch],
+          [t, ch-t2], [0, ch-t2], [0, t2], [t, t2],
         ]
         const pathData = roundedPolygonPath(crossPts, cr)
         return <Path key={el.id} {...cp}
@@ -715,7 +825,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           data={pathData}
           fill={d.fill==='transparent'?undefined:d.fill}
           stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={(d.rotation??0)} />
+          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
+          hitFunc={(ctx: any, shape: any) => {
+            ctx.beginPath(); ctx.rect(0, 0, cw, ch); ctx.closePath()
+            ctx.fillStrokeShape(shape)
+          }} />
       }
 
       case 'cylinder': {
@@ -724,7 +838,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         const fill = d.fill==='transparent'?undefined:d.fill
         const stroke = d.stroke==='transparent'?undefined:d.stroke
         return (
-          <Group key={el.id} {...cp} x={d.x??0} y={d.y??0}>
+          <Group key={el.id} {...cp} x={d.x??0} y={d.y??0} width={cyW} height={cyH}>
             {/* Gövdə */}
             <Rect
               x={0} y={ry} width={cyW} height={cyH - ry*2}
@@ -767,19 +881,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       >
         <Layer>
           {[...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map(renderElement)}
-          {/* Seçilmiş elementlərin highlight-ı */}
-          {selectedIds.length > 1 && elementsRef.current
-            .filter((el) => selectedIds.includes(el.id))
-            .map((el) => {
-              const bb = getElBBox(el)
-              return <Rect key={`sel-${el.id}`}
-                x={bb.x - 4} y={bb.y - 4}
-                width={bb.w + 8} height={bb.h + 8}
-                fill="rgba(99,102,241,0.08)" stroke="#6366f1"
-                strokeWidth={1.5 / stageScale} dash={[4/stageScale, 2/stageScale]}
-                listening={false} />
-            })
-          }
           {/* Rubber band selection box */}
           {selBox && selBox.w > 2 && (
             <Rect
@@ -791,11 +892,14 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           )}
           <Transformer
             ref={transformerRef}
-            rotateEnabled={true}
-            enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']}
+            rotateEnabled={selectedIds.length === 1}
+            enabledAnchors={selectedIds.length === 1
+              ? ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']
+              : []
+            }
             boundBoxFunc={(oldBox, newBox) => (newBox.width < 5 || newBox.height < 5 ? oldBox : newBox)}
             ignoreStroke={true}
-            shouldOverdrawWholeArea={true}
+            shouldOverdrawWholeArea={false}
           />
         </Layer>
       </Stage>
@@ -807,16 +911,30 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           onBlur={finishEditing}
           onKeyDown={(e) => {
             if (e.key === 'Escape') { finishEditing(); return }
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finishEditing() }
+            // Area text: Enter normal sətir keçidi, Escape bitir
+            // Klik text: Enter bitir
+            const hasArea = !!editPos.areaW
+            if (e.key === 'Enter' && !e.shiftKey && !hasArea) { e.preventDefault(); finishEditing() }
           }}
           style={{
             position: 'fixed', top: editPos.y, left: editPos.x,
             fontSize: (editingEl.data.fontSize ?? 20) * editPos.scale,
             fontFamily: editingEl.data.fontFamily ?? 'Arial',
+            fontStyle: (editingEl.data as any).fontStyle ?? 'normal',
+            textDecoration: (editingEl.data as any).textDecoration ?? 'none',
+            textAlign: (editingEl.data as any).align ?? 'left',
+            letterSpacing: ((editingEl.data as any).letterSpacing ?? 0) + 'px',
+            lineHeight: (editingEl.data as any).lineHeight ?? 1.2,
             color: editingEl.data.fill ?? '#0f172a',
             background: 'rgba(255,255,255,0.97)', border: '2px solid #4f46e5',
             borderRadius: 4, padding: '2px 6px', outline: 'none',
-            minWidth: 100, minHeight: 32, resize: 'both', lineHeight: 1.2,
+            width:  editPos.areaW ? editPos.areaW + 'px' : undefined,
+            height: editPos.areaH ? editPos.areaH + 'px' : undefined,
+            minWidth: editPos.areaW ? undefined : 100,
+            minHeight: editPos.areaW ? undefined : 32,
+            resize: editPos.areaW ? 'none' : 'both',
+            overflowY: editPos.areaW ? 'auto' : 'hidden',
+            boxSizing: 'border-box',
             zIndex: 9999, boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
           }}
         />

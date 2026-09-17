@@ -106,6 +106,11 @@ export interface ElementData {
     sides?: number
     innerRadius?: number
     cornerRadius?: number | number[]
+    fontStyle?: string
+    textDecoration?: string
+    align?: 'left' | 'center' | 'right'
+    letterSpacing?: number
+    lineHeight?: number
 }
 
 export interface CanvasElement {

@@ -205,63 +205,219 @@ export default function PropertiesPanel() {
           </Section>
         )}
 
-        {/* Mətn xüsusiyyətləri */}
-        {isText && (
-          <>
-            <Section title="Mətn rəngi">
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {PRESET_STROKES.map((c) => (
-                  <ColorSwatch
-                    key={c} color={c}
-                    selected={d.fill === c}
-                    onClick={() => update({ fill: c })}
-                  />
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={d.fill === 'transparent' || !d.fill ? '#000000' : d.fill}
-                  onChange={(e) => update({ fill: e.target.value })}
-                  className="w-8 h-7 rounded-lg border border-gray-200 cursor-pointer p-0.5"
-                />
-                <input
-                  type="text"
-                  value={d.fill || '#000000'}
-                  onChange={(e) => update({ fill: e.target.value })}
-                  className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 outline-none focus:border-indigo-400 font-mono"
-                />
-              </div>
-            </Section>
+        {/* ── MƏTNİN XÜSUSİYYƏTLƏRİ (Illustrator kimi) ── */}
+        {isText && (() => {
+          const fontFamily  = d.fontFamily  ?? 'Arial'
+          const fontSize    = d.fontSize    ?? 20
+          const fill        = d.fill        ?? '#0f172a'
+          const bold        = (d as any).fontStyle?.includes('bold')   ?? false
+          const italic      = (d as any).fontStyle?.includes('italic') ?? false
+          const underline   = (d as any).textDecoration === 'underline'
+          const align       = (d as any).align ?? 'left'
+          const letterSpace = (d as any).letterSpacing ?? 0
+          const lineH       = (d as any).lineHeight ?? 1.2
 
-            <Section title="Font ölçüsü">
-              <div className="flex flex-wrap gap-1.5">
-                {FONT_SIZES.map((s) => (
+          const toggleBold = () => {
+            const cur = (d as any).fontStyle ?? 'normal'
+            const next = bold
+              ? cur.replace('bold', '').trim() || 'normal'
+              : (cur === 'normal' ? 'bold' : cur + ' bold')
+            update({ fontStyle: next } as any)
+          }
+          const toggleItalic = () => {
+            const cur = (d as any).fontStyle ?? 'normal'
+            const next = italic
+              ? cur.replace('italic', '').trim() || 'normal'
+              : (cur === 'normal' ? 'italic' : cur + ' italic')
+            update({ fontStyle: next } as any)
+          }
+
+          const FONTS = [
+            'Arial','Arial Black','Comic Sans MS','Courier New',
+            'Georgia','Impact','Times New Roman','Trebuchet MS',
+            'Verdana','Helvetica','Tahoma',
+          ]
+
+          return (
+            <>
+              {/* Font ailəsi */}
+              <Section title="Font">
+                <select
+                  value={fontFamily}
+                  onChange={(e) => update({ fontFamily: e.target.value })}
+                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-indigo-400 bg-white"
+                  style={{ fontFamily }}
+                >
+                  {FONTS.map((f) => (
+                    <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
+                  ))}
+                </select>
+              </Section>
+
+              {/* Ölçü + B / I / U */}
+              <Section title="Stil">
+                <div className="flex items-center gap-1.5">
+                  {/* Font ölçüsü */}
+                  <input
+                    type="number"
+                    value={fontSize}
+                    min={6} max={400}
+                    onChange={(e) => update({ fontSize: parseInt(e.target.value) || 20 })}
+                    className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-indigo-400 text-center"
+                  />
+                  <span className="text-xs text-gray-400">px</span>
+                  <div className="flex-1" />
+                  {/* Bold */}
                   <button
-                    key={s}
-                    onClick={() => update({ fontSize: s })}
-                    className={`px-2 py-1 text-xs rounded-lg border transition-all ${
-                      d.fontSize === s
-                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                        : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                    onClick={toggleBold}
+                    title="Qalın (Ctrl+B)"
+                    className={`w-7 h-7 rounded-lg text-sm font-bold border transition-all ${
+                      bold ? 'bg-indigo-600 text-white border-indigo-600' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
                     }`}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-              <div className="mt-2">
-                <input
-                  type="number"
-                  value={d.fontSize ?? 20}
-                  onChange={(e) => update({ fontSize: parseInt(e.target.value) || 20 })}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-indigo-400"
-                  min={6} max={400}
-                />
-              </div>
-            </Section>
-          </>
-        )}
+                  >B</button>
+                  {/* Italic */}
+                  <button
+                    onClick={toggleItalic}
+                    title="Kursiv (Ctrl+I)"
+                    className={`w-7 h-7 rounded-lg text-sm italic border transition-all ${
+                      italic ? 'bg-indigo-600 text-white border-indigo-600' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >I</button>
+                  {/* Underline */}
+                  <button
+                    onClick={() => update({ textDecoration: underline ? 'none' : 'underline' } as any)}
+                    title="Altından xətt (Ctrl+U)"
+                    className={`w-7 h-7 rounded-lg text-sm underline border transition-all ${
+                      underline ? 'bg-indigo-600 text-white border-indigo-600' : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >U</button>
+                </div>
+
+                {/* Font ölçüsü preset-ləri */}
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {[10,12,14,16,18,20,24,28,32,36,48,64].map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => update({ fontSize: s })}
+                      className={`px-1.5 py-0.5 text-[10px] rounded border transition-all ${
+                        fontSize === s
+                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                          : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                      }`}
+                    >{s}</button>
+                  ))}
+                </div>
+              </Section>
+
+              {/* Hizalama */}
+              <Section title="Hizalama">
+                <div className="flex gap-1">
+                  {([
+                    { v: 'left',   label: '⬛▪▪', title: 'Sola' },
+                    { v: 'center', label: '▪⬛▪', title: 'Ortaya' },
+                    { v: 'right',  label: '▪▪⬛', title: 'Sağa' },
+                  ] as const).map(({ v, label, title }) => (
+                    <button
+                      key={v}
+                      onClick={() => update({ align: v } as any)}
+                      title={title}
+                      className={`flex-1 py-1.5 text-xs rounded-lg border transition-all ${
+                        align === v
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'border-gray-200 text-gray-600 hover:bg-gray-100'
+                      }`}
+                    >
+                      {v === 'left' ? (
+                        <span className="flex flex-col gap-0.5 items-start px-2">
+                          <span className="block h-0.5 w-full bg-current rounded" />
+                          <span className="block h-0.5 w-2/3 bg-current rounded" />
+                          <span className="block h-0.5 w-full bg-current rounded" />
+                        </span>
+                      ) : v === 'center' ? (
+                        <span className="flex flex-col gap-0.5 items-center px-2">
+                          <span className="block h-0.5 w-full bg-current rounded" />
+                          <span className="block h-0.5 w-2/3 bg-current rounded" />
+                          <span className="block h-0.5 w-full bg-current rounded" />
+                        </span>
+                      ) : (
+                        <span className="flex flex-col gap-0.5 items-end px-2">
+                          <span className="block h-0.5 w-full bg-current rounded" />
+                          <span className="block h-0.5 w-2/3 bg-current rounded" />
+                          <span className="block h-0.5 w-full bg-current rounded" />
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </Section>
+
+              {/* Hərf aralığı + Sətir aralığı */}
+              <Section title="Aralıqlar">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <p className="text-[10px] text-gray-400 mb-1">Hərf aralığı</p>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={letterSpace}
+                        min={-20} max={200} step={0.5}
+                        onChange={(e) => update({ letterSpacing: parseFloat(e.target.value) || 0 } as any)}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-indigo-400 text-center"
+                      />
+                    </div>
+                    <input
+                      type="range" min={-20} max={200} step={0.5}
+                      value={letterSpace}
+                      onChange={(e) => update({ letterSpacing: parseFloat(e.target.value) } as any)}
+                      className="w-full mt-1 accent-indigo-600"
+                    />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-gray-400 mb-1">Sətir aralığı</p>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={lineH}
+                        min={0.5} max={5} step={0.05}
+                        onChange={(e) => update({ lineHeight: parseFloat(e.target.value) || 1.2 } as any)}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-indigo-400 text-center"
+                      />
+                    </div>
+                    <input
+                      type="range" min={0.5} max={5} step={0.05}
+                      value={lineH}
+                      onChange={(e) => update({ lineHeight: parseFloat(e.target.value) } as any)}
+                      className="w-full mt-1 accent-indigo-600"
+                    />
+                  </div>
+                </div>
+              </Section>
+
+              {/* Mətn rəngi */}
+              <Section title="Mətn rəngi">
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {PRESET_STROKES.map((c) => (
+                    <ColorSwatch key={c} color={c} selected={fill === c} onClick={() => update({ fill: c })} />
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={fill === 'transparent' || !fill ? '#000000' : fill}
+                    onChange={(e) => update({ fill: e.target.value })}
+                    className="w-8 h-7 rounded-lg border border-gray-200 cursor-pointer p-0.5"
+                  />
+                  <input
+                    type="text"
+                    value={fill || '#000000'}
+                    onChange={(e) => update({ fill: e.target.value })}
+                    className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 outline-none focus:border-indigo-400 font-mono"
+                  />
+                </div>
+              </Section>
+            </>
+          )
+        })()}
 
         {/* Ölçülər — shape üçün */}
         {isShape && (

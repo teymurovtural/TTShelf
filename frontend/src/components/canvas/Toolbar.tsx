@@ -190,7 +190,7 @@ export default function Toolbar({
 
       <div className="w-px h-5 bg-gray-200 mx-0.5 shrink-0" />
 
-      {/* Undo / Redo */}
+      {/* Undo / Redo / Sıfırla */}
       <button onClick={undo} title="Geri al (Ctrl+Z)"
         className="p-2 rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-all shrink-0">
         <Undo2 size={16} />
@@ -198,6 +198,17 @@ export default function Toolbar({
       <button onClick={redo} title="İrəli al (Ctrl+Y)"
         className="p-2 rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-all shrink-0">
         <Redo2 size={16} />
+      </button>
+      <button
+        onClick={() => {
+          if (confirm('Canvas-dakı bütün elementlər silinəcək. Davam etmək istəyirsiniz?')) {
+            setElements([])
+          }
+        }}
+        title="Canvas-ı sıfırla"
+        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-500 hover:text-red-600 text-xs font-medium transition-all shrink-0"
+      >
+        Lovhəni təmizlə
       </button>
 
       {/* Sil */}
@@ -237,19 +248,6 @@ export default function Toolbar({
       >
         <BookOpen size={15} />
         PDF
-      </button>
-
-      {/* Canvas sıfırla */}
-      <button
-        onClick={() => {
-          if (confirm('Canvas-dakı bütün elementlər silinəcək. Davam etmək istəyirsiniz?')) {
-            setElements([])
-          }
-        }}
-        title="Canvas-ı sıfırla"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-500 hover:text-red-600 text-sm font-medium transition-all shrink-0"
-      >
-        <Trash2 size={15} />
       </button>
 
       {/* Export */}
