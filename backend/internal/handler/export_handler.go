@@ -43,10 +43,10 @@ func NewExportHandler(canvasService domain.CanvasService, minio *storage.MinioCl
 // @Failure      404 {object} response.Response
 // @Router       /canvases/{id}/export/pdf [post]
 func (h *ExportHandler) ExportPDF(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.GetUserID(r)
+	userID   := middleware.GetUserID(r)
 	canvasID := chi.URLParam(r, "id")
 
-	// Canvas user-ə məxsusdurmu yoxla
+	// 1. Əvvəl ownership yoxla
 	if _, err := h.canvasService.ExportPDF(r.Context(), canvasID, userID, nil); err != nil {
 		if appErr, ok := err.(*apperror.AppError); ok {
 			response.Error(w, appErr)
@@ -56,6 +56,7 @@ func (h *ExportHandler) ExportPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2. Sonra multipart form parse et
 	if err := r.ParseMultipartForm(maxExportSize); err != nil {
 		response.Error(w, apperror.New("FILE_TOO_LARGE", "PDF maksimum 50MB ola bilər", http.StatusBadRequest))
 		return
@@ -68,29 +69,33 @@ func (h *ExportHandler) ExportPDF(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// MIME yoxla
+	// 3. MIME yoxla — jsPDF "application/octet-stream" göndərə bilər,
+	//    ona görə Content-Type header-ı da qəbul edirik
 	buf := make([]byte, 512)
 	n, _ := file.Read(buf)
 	mimeType := http.DetectContentType(buf[:n])
-	if mimeType != "application/pdf" {
-		// jsPDF bəzən "application/octet-stream" göndərə bilər, header-a da bax
-		ct := header.Header.Get("Content-Type")
-		if ct != "application/pdf" {
-			response.Error(w, apperror.New("INVALID_FILE_TYPE", "Yalnız PDF qəbul edilir", http.StatusBadRequest))
-			return
+
+	isPDF := mimeType == "application/pdf" ||
+		header.Header.Get("Content-Type") == "application/pdf"
+
+	if !isPDF {
+		// jsPDF bəzən %PDF magic bytes ilə başlayır, content-type olmasa belə
+		if len(buf) >= 4 && string(buf[:4]) == "%PDF" {
+			isPDF = true
 		}
 	}
 
-	// Faylı başa qaytar
+	if !isPDF {
+		response.Error(w, apperror.New("INVALID_FILE_TYPE", "Yalnız PDF qəbul edilir", http.StatusBadRequest))
+		return
+	}
+
+	// 4. Faylı başa qaytar, tam oxu
 	if _, err := file.Seek(0, 0); err != nil {
 		response.Error(w, apperror.ErrInternalError)
 		return
 	}
 
-	// Köhnə PDF varsa üzərinə yaz — eyni key istifadə et
-	objectKey := fmt.Sprintf("exports/%s/%s.pdf", userID, canvasID)
-
-	// Faylı oxu
 	var buf2 bytes.Buffer
 	if _, err := buf2.ReadFrom(file); err != nil {
 		response.Error(w, apperror.ErrInternalError)
@@ -98,8 +103,8 @@ func (h *ExportHandler) ExportPDF(w http.ResponseWriter, r *http.Request) {
 	}
 	pdfBytes := buf2.Bytes()
 
-	// Yeni UUID istifadə et ki, cache-lənmiş köhnə versiya gəlməsin
-	objectKey = fmt.Sprintf("exports/%s/%s_%s.pdf", userID, canvasID, uuid.New().String()[:8])
+	// 5. MinIO-ya yüklə — UUID suffix ilə ki, cache problemləri olmasın
+	objectKey := fmt.Sprintf("exports/%s/%s_%s.pdf", userID, canvasID, uuid.New().String()[:8])
 
 	if err := h.minio.Upload(
 		r.Context(),

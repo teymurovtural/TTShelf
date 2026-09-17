@@ -56,10 +56,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function PropertiesPanel() {
-  const { elements, selectedId, updateElement } = useCanvasStore()
+  const { elements, selectedIds, updateElement } = useCanvasStore()
+  const selectedId = selectedIds.length === 1 ? selectedIds[0] : null
   const el = elements.find((e) => e.id === selectedId)
 
-  if (!el) {
+  if (!el) return null
+
+  if (false) {
     return (
       <div className="w-56 border-l border-gray-200 bg-white flex items-center justify-center p-6 text-center shrink-0">
         <p className="text-xs text-gray-400 leading-relaxed">
@@ -71,7 +74,7 @@ export default function PropertiesPanel() {
   }
 
   const d = el.data
-  const isShape  = ['rect', 'circle'].includes(el.type)
+  const isShape  = ['rect', 'circle', 'triangle', 'diamond', 'pentagon', 'hexagon', 'star', 'parallelogram', 'cross', 'cylinder'].includes(el.type)
   const isLine   = ['line', 'arrow', 'freehand'].includes(el.type)
   const isText   = el.type === 'text'
   const isImage  = el.type === 'image'
@@ -79,17 +82,26 @@ export default function PropertiesPanel() {
   const update = (patch: Partial<ElementData>) => updateElement(el.id, patch)
 
   return (
-    <div className="w-56 border-l border-gray-200 bg-white overflow-y-auto shrink-0">
+    <div className="w-56 border-r border-gray-200 bg-white overflow-y-auto shrink-0" style={{order: -1}}>
       <div className="p-3 border-b border-gray-100">
         <p className="text-xs font-semibold text-gray-700 capitalize">
           {el.type === 'rect' ? 'Düzbucaqlı'
             : el.type === 'circle' ? 'Dairə'
+            : el.type === 'triangle' ? 'Üçbucaq'
+            : el.type === 'diamond' ? 'Romb'
+            : el.type === 'pentagon' ? 'Beşbucaq'
+            : el.type === 'hexagon' ? 'Altıbucaq'
+            : el.type === 'star' ? 'Ulduz'
+            : el.type === 'parallelogram' ? 'Paraleloqram'
+            : el.type === 'cross' ? 'Xaç'
+            : el.type === 'cylinder' ? 'Silindr'
             : el.type === 'line' ? 'Xətt'
             : el.type === 'arrow' ? 'Ok'
             : el.type === 'freehand' ? 'Çizgi'
             : el.type === 'text' ? 'Mətn'
             : 'Şəkil'}
         </p>
+
       </div>
 
       <div className="p-3">
@@ -275,7 +287,7 @@ export default function PropertiesPanel() {
           </Section>
         )}
 
-        {/* Dairə radius — shape üçün */}
+        {/* Dönmə */}
         {isShape && (
           <Section title="Dönmə">
             <div className="flex items-center gap-2">
@@ -287,6 +299,53 @@ export default function PropertiesPanel() {
                 className="flex-1 accent-indigo-600"
               />
               <span className="text-xs text-gray-500 w-10 text-right">{Math.round(d.rotation ?? 0)}°</span>
+            </div>
+          </Section>
+        )}
+
+        {/* Künc yumrulaşdırma — bütün shape-lər üçün */}
+        {isShape && (
+          <Section title="Künc radiusu">
+            <div className="flex items-center gap-2 mb-2">
+              <input
+                type="range"
+                min={0} max={200} step={1}
+                value={Array.isArray(d.cornerRadius) ? (d.cornerRadius[0] ?? 0) : (d.cornerRadius ?? 0)}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value)
+                  update({ cornerRadius: v } as any)
+                }}
+                className="flex-1 accent-indigo-600"
+              />
+              <span className="text-xs text-gray-500 w-10 text-right">
+                {Array.isArray(d.cornerRadius) ? (d.cornerRadius[0] ?? 0) : (d.cornerRadius ?? 0)}px
+              </span>
+            </div>
+            {/* Hər künc ayrıca */}
+            <div className="grid grid-cols-2 gap-1.5">
+              {['Sol üst', 'Sağ üst', 'Sağ alt', 'Sol alt'].map((label, i) => {
+                const cr = Array.isArray(d.cornerRadius)
+                  ? d.cornerRadius
+                  : [d.cornerRadius ?? 0, d.cornerRadius ?? 0, d.cornerRadius ?? 0, d.cornerRadius ?? 0]
+                return (
+                  <div key={i}>
+                    <p className="text-[10px] text-gray-400 mb-0.5">{label}</p>
+                    <input
+                      type="number"
+                      min={0} max={500}
+                      value={cr[i] ?? 0}
+                      onChange={(e) => {
+                        const newCr = [...(Array.isArray(d.cornerRadius)
+                          ? d.cornerRadius
+                          : [d.cornerRadius ?? 0, d.cornerRadius ?? 0, d.cornerRadius ?? 0, d.cornerRadius ?? 0])]
+                        newCr[i] = parseFloat(e.target.value) || 0
+                        update({ cornerRadius: newCr } as any)
+                      }}
+                      className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs outline-none focus:border-indigo-400"
+                    />
+                  </div>
+                )
+              })}
             </div>
           </Section>
         )}

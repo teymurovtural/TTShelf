@@ -8,8 +8,8 @@ import { useBookStore } from '../store/bookStore'
 import { useAutoSave } from '../hooks/useAutoSave'
 import { useKeyboard } from '../hooks/useKeyboard'
 import Toolbar from '../components/canvas/Toolbar'
-import CanvasBoard from '../components/canvas/CanvasBoard'
-import PropertiesPanel from '../components/canvas/PropertiesPanel'
+import CanvasBoard, { type CanvasBoardHandle } from '../components/canvas/CanvasBoard'
+import LeftPanel from '../components/canvas/LeftPanel'
 import PDFViewer from '../components/pdf/PDFViewer'
 import type { Canvas } from '../types'
 import jsPDF from 'jspdf'
@@ -20,7 +20,7 @@ export default function Editor() {
   const bookId = searchParams.get('book')
 
   const { setElements, isDirty } = useCanvasStore()
-  const { setCurrentBook } = useBookStore()
+  const { setCurrentBook }       = useBookStore()
 
   const [canvas,      setCanvas]      = useState<Canvas | null>(null)
   const [canvasTitle, setCanvasTitle] = useState('')
@@ -29,14 +29,17 @@ export default function Editor() {
   const [loading,     setLoading]     = useState(true)
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
 
-  const containerRef   = useRef<HTMLDivElement>(null)
-  const titleSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const containerRef    = useRef<HTMLDivElement>(null)
+  const canvasBoardRef  = useRef<CanvasBoardHandle>(null)
+  const titleSaveTimer  = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useAutoSave(canvasId || '')
   useKeyboard()
 
-  // Container ölçüsü
+  // Container ölçüsü — loading, pdfOpen dəyişəndə yenidən qoş
   useEffect(() => {
+    if (loading) return // hələ mount olmayıb
+
     const update = () => {
       if (containerRef.current) {
         setContainerSize({
@@ -45,11 +48,21 @@ export default function Editor() {
         })
       }
     }
-    update()
-    const obs = new ResizeObserver(update)
-    if (containerRef.current) obs.observe(containerRef.current)
-    return () => obs.disconnect()
-  }, [pdfOpen])
+
+    // Bir frame gözlə ki DOM render olunsun
+    const raf = requestAnimationFrame(() => {
+      update()
+      const obs = new ResizeObserver(update)
+      if (containerRef.current) obs.observe(containerRef.current)
+      // cleanup üçün saxla
+      ;(containerRef as any)._obs = obs
+    })
+
+    return () => {
+      cancelAnimationFrame(raf)
+      ;(containerRef as any)._obs?.disconnect()
+    }
+  }, [loading, pdfOpen])
 
   // Canvas yüklə
   useEffect(() => {
@@ -71,7 +84,7 @@ export default function Editor() {
       }
     }
     load()
-  }, [canvasId])
+  }, [canvasId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Kitab yüklə
   useEffect(() => {
@@ -85,7 +98,7 @@ export default function Editor() {
     }
     if (bookId) loadBook(bookId)
     else if (canvas?.book_id) loadBook(canvas.book_id)
-  }, [bookId, canvas])
+  }, [bookId, canvas]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleTitleChange = (title: string) => {
     setCanvasTitle(title)
@@ -95,27 +108,56 @@ export default function Editor() {
     }, 1000)
   }
 
-  // PDF export — bütün canvas sahəsini götür
+  // PDF export — CanvasBoard-dan dataUrl al, jsPDF ilə PDF yarat
   const handleExport = async () => {
-    if (!canvasId) return
-    const stageEl = document.querySelector('canvas')
-    if (!stageEl) return
+    if (!canvasId || !canvasBoardRef.current) return
     try {
-      const dataUrl = stageEl.toDataURL('image/png', 1.0)
+      const dataUrl = canvasBoardRef.current.exportImage()
+      if (!dataUrl) {
+        alert('Canvas boşdur')
+        return
+      }
+
+      // Canvas ölçüsünü tap
+      const img = new window.Image()
+      img.src = dataUrl
+      await new Promise<void>((res) => { img.onload = () => res() })
+
+      // pixelRatio:2 ilə çəkilib, real ölçü yarısıdır
+      const w = img.width  / 2
+      const h = img.height / 2
+
       const pdf = new jsPDF({
-        orientation: stageEl.width > stageEl.height ? 'landscape' : 'portrait',
+        orientation: w > h ? 'landscape' : 'portrait',
         unit: 'px',
-        format: [stageEl.width, stageEl.height],
+        format: [w, h],
+        hotfixes: ['px_scaling'],
       })
-      pdf.addImage(dataUrl, 'PNG', 0, 0, stageEl.width, stageEl.height)
+
+      pdf.addImage(dataUrl, 'PNG', 0, 0, w, h)
+
       const blob = pdf.output('blob')
-      const res  = await canvasApi.exportPdf(canvasId, blob)
-      const url  = res.data.data.url
-      const a    = document.createElement('a')
-      a.href     = url
-      a.download = `${canvasTitle || 'canvas'}.pdf`
-      a.click()
-    } catch {
+
+      // Backend-ə göndər (MinIO-ya yüklə, URL al)
+      try {
+        const res  = await canvasApi.exportPdf(canvasId, blob)
+        const url  = res.data.data.url
+        const a    = document.createElement('a')
+        a.href     = url
+        a.download = `${canvasTitle || 'canvas'}.pdf`
+        a.target   = '_blank'
+        a.click()
+      } catch {
+        // Backend xəta versə birbaşa yüklə
+        const url = URL.createObjectURL(blob)
+        const a   = document.createElement('a')
+        a.href     = url
+        a.download = `${canvasTitle || 'canvas'}.pdf`
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+    } catch (err) {
+      console.error('Export xətası:', err)
       alert('Export zamanı xəta baş verdi')
     }
   }
@@ -127,10 +169,6 @@ export default function Editor() {
       </div>
     )
   }
-
-  const canvasWidth = pdfOpen
-    ? Math.floor(containerSize.width * 0.58)
-    : containerSize.width
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
@@ -154,23 +192,25 @@ export default function Editor() {
 
       {/* Main area */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Canvas area */}
+        {/* Canvas area — tam genişlik */}
         <div
           ref={containerRef}
-          className="flex-1 overflow-hidden"
-          style={{ width: pdfOpen ? '58%' : '100%' }}
+          className="flex-1 overflow-hidden relative"
         >
           {containerSize.width > 0 && (
-            <CanvasBoard width={canvasWidth} height={containerSize.height} />
+            <CanvasBoard
+              ref={canvasBoardRef}
+              width={containerSize.width}
+              height={containerSize.height}
+            />
           )}
+          {/* Sol panel — canvas üzərindən üzür */}
+          <LeftPanel />
         </div>
-
-        {/* Properties panel */}
-        <PropertiesPanel />
 
         {/* PDF panel */}
         {pdfOpen && pdfUrl && (
-          <div className="border-l border-gray-200 overflow-hidden" style={{ width: '42%' }}>
+          <div className="border-l border-gray-200 overflow-hidden shrink-0" style={{ width: 420 }}>
             <PDFViewer
               bookId={bookId || canvas?.book_id || ''}
               fileUrl={pdfUrl}
@@ -179,7 +219,7 @@ export default function Editor() {
         )}
 
         {pdfOpen && !pdfUrl && (
-          <div className="border-l border-gray-200 flex items-center justify-center bg-gray-50" style={{ width: '42%' }}>
+          <div className="border-l border-gray-200 flex items-center justify-center bg-gray-50 shrink-0" style={{ width: 420 }}>
             <div className="text-center text-gray-400 p-6">
               <p className="text-sm mb-3">Kitab seçilməyib</p>
               <a href="/dashboard" className="text-indigo-500 hover:text-indigo-600 text-sm">

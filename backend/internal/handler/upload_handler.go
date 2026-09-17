@@ -21,15 +21,15 @@ var allowedImageTypes = map[string]string{
 	"image/jpeg": ".jpg",
 	"image/png":  ".png",
 	"image/webp": ".webp",
+	"image/gif":  ".gif",
 }
 
-var allowedFontTypes = map[string]string{
-	"font/ttf":               ".ttf",
-	"font/otf":               ".otf",
-	"font/woff":              ".woff",
-	"font/woff2":             ".woff2",
-	"application/font-woff":  ".woff",
-	"application/x-font-ttf": ".ttf",
+// Extension → MIME type mapping (font üçün)
+var allowedFontExts = map[string]string{
+	".ttf":   "font/ttf",
+	".otf":   "font/otf",
+	".woff":  "font/woff",
+	".woff2": "font/woff2",
 }
 
 type UploadHandler struct {
@@ -72,7 +72,7 @@ func (h *UploadHandler) UploadImage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// MIME type yoxla (ilk 512 byte oxu)
+	// MIME type yoxla (ilk 512 byte)
 	buf := make([]byte, 512)
 	n, err := file.Read(buf)
 	if err != nil {
@@ -83,18 +83,17 @@ func (h *UploadHandler) UploadImage(w http.ResponseWriter, r *http.Request) {
 
 	ext, ok := allowedImageTypes[mimeType]
 	if !ok {
-		// DetectContentType bəzən "image/jpeg" əvəzinə başqa şey qaytarır,
-		// header Content-Type-a da bax
-		ct := header.Header.Get("Content-Type")
-		ext, ok = allowedImageTypes[ct]
+		// Fallback: header Content-Type
+		ct := strings.Split(header.Header.Get("Content-Type"), ";")[0]
+		ext, ok = allowedImageTypes[strings.TrimSpace(ct)]
 		if !ok {
-			response.Error(w, apperror.New("INVALID_FILE_TYPE", "Yalnız PNG, JPG və WEBP qəbul edilir", http.StatusBadRequest))
+			response.Error(w, apperror.New("INVALID_FILE_TYPE", "Yalnız PNG, JPG, GIF və WEBP qəbul edilir", http.StatusBadRequest))
 			return
 		}
-		mimeType = ct
+		mimeType = strings.TrimSpace(ct)
 	}
 
-	// Faylı başa qaytar (ilk 512 byte artıq oxundu)
+	// Faylı başa qaytar
 	if _, err := file.Seek(0, 0); err != nil {
 		response.Error(w, apperror.ErrInternalError)
 		return
@@ -138,15 +137,10 @@ func (h *UploadHandler) UploadFont(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	// Extension-dan MIME al (font faylları üçün DetectContentType işləmir)
 	originalExt := strings.ToLower(filepath.Ext(header.Filename))
-	mimeType := ""
-	for mt, ext := range allowedFontTypes {
-		if ext == originalExt {
-			mimeType = mt
-			break
-		}
-	}
-	if mimeType == "" {
+	mimeType, ok := allowedFontExts[originalExt]
+	if !ok {
 		response.Error(w, apperror.New("INVALID_FILE_TYPE", "Yalnız TTF, OTF, WOFF və WOFF2 qəbul edilir", http.StatusBadRequest))
 		return
 	}

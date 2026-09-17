@@ -74,6 +74,14 @@ export type ElementType =
     | 'image'
     | 'line'
     | 'freehand'
+    | 'triangle'
+    | 'star'
+    | 'pentagon'
+    | 'hexagon'
+    | 'diamond'
+    | 'parallelogram'
+    | 'cylinder'
+    | 'cross'
 
 export interface ElementData {
     x?: number
@@ -95,6 +103,9 @@ export interface ElementData {
     dash?: number[]
     lineCap?: string
     lineJoin?: string
+    sides?: number
+    innerRadius?: number
+    cornerRadius?: number | number[]
 }
 
 export interface CanvasElement {

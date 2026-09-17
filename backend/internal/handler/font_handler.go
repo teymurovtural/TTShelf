@@ -57,16 +57,10 @@ func (h *FontHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Extension yoxla
+	// Extension yoxla — allowedFontExts: ext -> mimeType
 	originalExt := strings.ToLower(filepath.Ext(header.Filename))
-	mimeType := ""
-	for mt, ext := range allowedFontTypes {
-		if ext == originalExt {
-			mimeType = mt
-			break
-		}
-	}
-	if mimeType == "" {
+	mimeType, ok := allowedFontExts[originalExt]
+	if !ok {
 		response.Error(w, apperror.New("INVALID_FILE_TYPE", "Yalnız TTF, OTF, WOFF və WOFF2 qəbul edilir", http.StatusBadRequest))
 		return
 	}
@@ -81,7 +75,6 @@ func (h *FontHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	// DB-yə qeyd et
 	font, err := h.fontService.Create(r.Context(), userID, name, objectKey)
 	if err != nil {
-		// MinIO-ya artıq yükləndi, amma DB xətası — MinIO-dan sil
 		_ = h.minio.Delete(r.Context(), objectKey)
 		if appErr, ok := err.(*apperror.AppError); ok {
 			response.Error(w, appErr)
@@ -144,7 +137,6 @@ func (h *FontHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// MinIO-dan da sil
 	_ = h.minio.Delete(r.Context(), font.FileKey)
 
 	response.OK(w, map[string]string{"message": "Font silindi"})

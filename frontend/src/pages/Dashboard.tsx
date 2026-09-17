@@ -52,7 +52,7 @@ export default function Dashboard() {
   useEffect(() => {
     booksApi.getAll().then((res) => setBooks(res.data.data.books || []))
     canvasApi.getAll().then((res) => setCanvases(res.data.data.canvases || []))
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLogout = async () => {
     await authApi.logout()
@@ -111,13 +111,38 @@ export default function Dashboard() {
     }
   }
 
+  // Kitab üçün canvas aç — mövcudu tap, yoxdursa yarat
   const handleOpenBook = async (bookId: string, title: string) => {
     try {
+      // Bu kitabla artıq bağlı canvas varmı yoxla
+      const existing = canvases.find((c) => c.book_id === bookId)
+      if (existing) {
+        window.location.href = `/editor/${existing.id}?book=${bookId}`
+        return
+      }
+      // Yoxdursa yeni canvas yarat
       const res = await canvasApi.create({ title, book_id: bookId })
-      window.location.href = `/editor/${res.data.data.id}?book=${bookId}`
+      const newCanvas = res.data.data
+      setCanvases((prev) => [...prev, newCanvas])
+      window.location.href = `/editor/${newCanvas.id}?book=${bookId}`
     } catch {
       alert('Canvas yaradıla bilmədi')
     }
+  }
+
+  const handleClearAll = async () => {
+    const confirmed = confirm(
+      'Bütün kitablar və canvas-lar silinəcək. Bu əməliyyat geri alına bilməz. Davam etmək istəyirsiniz?'
+    )
+    if (!confirmed) return
+
+    // Bütün kitabları sil
+    await Promise.allSettled(books.map((b) => booksApi.delete(b.id)))
+    // Bütün canvas-ları sil
+    await Promise.allSettled(canvases.map((c) => canvasApi.delete(c.id)))
+
+    setBooks([])
+    setCanvases([])
   }
 
   const handleDeleteCanvas = async (id: string) => {
@@ -151,6 +176,13 @@ export default function Dashboard() {
                 @{user.username}
               </span>
             )}
+            <button
+              onClick={handleClearAll}
+              className="flex items-center gap-1.5 text-sm text-red-400 hover:text-red-600 transition-colors"
+            >
+              <Trash2 size={15} />
+              Sıfırla
+            </button>
             <button
               onClick={handleLogout}
               className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors"
@@ -211,48 +243,57 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {books.map((book) => (
-                  <div key={book.id}
-                    className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-col gap-3 hover:border-gray-300 hover:shadow-sm transition-all group">
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center shrink-0">
-                        <FileText size={18} className="text-indigo-500" />
+                {books.map((book) => {
+                  const linkedCanvas = canvases.find((c) => c.book_id === book.id)
+                  return (
+                    <div key={book.id}
+                      className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-col gap-3 hover:border-gray-300 hover:shadow-sm transition-all group">
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center shrink-0">
+                          <FileText size={18} className="text-indigo-500" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-medium text-gray-900 truncate text-sm">{book.title}</h3>
+                          {book.author && (
+                            <p className="text-xs text-gray-400 truncate mt-0.5">{book.author}</p>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => handleDeleteBook(book.id)}
+                          className="text-gray-300 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+                        >
+                          <Trash2 size={15} />
+                        </button>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-medium text-gray-900 truncate text-sm">{book.title}</h3>
-                        {book.author && (
-                          <p className="text-xs text-gray-400 truncate mt-0.5">{book.author}</p>
+
+                      <div className="flex items-center gap-3 text-xs text-gray-400">
+                        <span>{book.total_pages} səh.</span>
+                        <span>•</span>
+                        <span>{formatSize(book.file_size)}</span>
+                        {book.last_page > 1 && (
+                          <>
+                            <span>•</span>
+                            <span className="text-indigo-500">{book.last_page}-ci səh.</span>
+                          </>
                         )}
                       </div>
+
+                      {linkedCanvas && (
+                        <p className="text-xs text-emerald-600 bg-emerald-50 rounded-lg px-2 py-1">
+                          Canvas: {linkedCanvas.title}
+                        </p>
+                      )}
+
                       <button
-                        onClick={() => handleDeleteBook(book.id)}
-                        className="text-gray-300 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+                        onClick={() => handleOpenBook(book.id, book.title)}
+                        className="mt-auto w-full flex items-center justify-center gap-1.5 bg-gray-50 hover:bg-indigo-50 hover:text-indigo-600 border border-gray-200 hover:border-indigo-200 text-gray-700 text-sm py-2.5 rounded-xl transition-all font-medium"
                       >
-                        <Trash2 size={15} />
+                        {linkedCanvas ? 'Canvas-ı aç' : 'Oxu / Qeyd apar'}
+                        <ChevronRight size={14} />
                       </button>
                     </div>
-
-                    <div className="flex items-center gap-3 text-xs text-gray-400">
-                      <span>{book.total_pages} səh.</span>
-                      <span>•</span>
-                      <span>{formatSize(book.file_size)}</span>
-                      {book.last_page > 1 && (
-                        <>
-                          <span>•</span>
-                          <span className="text-indigo-500">{book.last_page}-ci səh.</span>
-                        </>
-                      )}
-                    </div>
-
-                    <button
-                      onClick={() => handleOpenBook(book.id, book.title)}
-                      className="mt-auto w-full flex items-center justify-center gap-1.5 bg-gray-50 hover:bg-indigo-50 hover:text-indigo-600 border border-gray-200 hover:border-indigo-200 text-gray-700 text-sm py-2.5 rounded-xl transition-all font-medium"
-                    >
-                      Oxu / Qeyd apar
-                      <ChevronRight size={14} />
-                    </button>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
@@ -306,7 +347,12 @@ export default function Dashboard() {
                       </button>
                     </div>
                     <button
-                      onClick={() => window.location.href = `/editor/${canvas.id}`}
+                      onClick={() => {
+                        const url = canvas.book_id
+                          ? `/editor/${canvas.id}?book=${canvas.book_id}`
+                          : `/editor/${canvas.id}`
+                        window.location.href = url
+                      }}
                       className="mt-auto w-full flex items-center justify-center gap-1.5 bg-gray-50 hover:bg-indigo-50 hover:text-indigo-600 border border-gray-200 hover:border-indigo-200 text-gray-700 text-sm py-2.5 rounded-xl transition-all font-medium"
                     >
                       Aç
