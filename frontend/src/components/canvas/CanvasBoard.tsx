@@ -10,7 +10,7 @@ import type { CanvasElement, ElementData, TextRun } from '../../types'
 import { v4 as uuidv4 } from 'uuid'
 import RichTextShape, { isAreaText, textBox } from './RichTextShape'
 import RichTextEditor from './RichTextEditor'
-import { getRuns, runsToPlainText } from './richText'
+import { getDefaults, getRuns, layoutText, runsToPlainText, type Align } from './richText'
 
 // ---- Rounded polygon path helpers ----
 function roundedPolygonPath(points: number[][], radius: number): string {
@@ -279,29 +279,46 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
   }
 
   // ── Mətn redaktəsi (rich text) ──
-  const startEditing = (elId: string) => {
+  // Redaktə overlay-nin ekran mövqeyini/miqyasını hesablayır — həm redaktəyə
+  // başlayanda, həm də redaktə zamanı pan/zoom baş verəndə çağırılır ki,
+  // üzən qutu canvas-dakı fiqurdan "ayrılmasın".
+  const computeEditPos = (elId: string) => {
     const el = elementsRef.current.find((e) => e.id === elId)
-    if (!el || el.type !== 'text') return
+    if (!el || el.type !== 'text') return null
     const stage = stageRef.current
-    if (!stage) return
+    if (!stage) return null
     const node = stage.findOne(`#${el.id}`)
-    if (!node) return
+    if (!node) return null
     const stageBox = stage.container().getBoundingClientRect()
     const absPos   = node.getAbsolutePosition()
     const sc       = stageScaleRef.current
     const area     = isAreaText(el)
     const box      = textBox(el)
-    setEditingId(el.id)
-    setEditPos({
+    return {
       x: stageBox.left + absPos.x,
       y: stageBox.top  + absPos.y,
       scale: sc,
       areaW: area ? box.width  * sc : undefined,
       areaH: area ? box.height * sc : undefined,
-    })
+    }
+  }
+
+  const startEditing = (elId: string) => {
+    const pos = computeEditPos(elId)
+    if (!pos) return
+    setEditingId(elId)
+    setEditPos(pos)
     transformerRef.current?.hide()
     transformerRef.current?.getLayer()?.batchDraw()
   }
+
+  // Redaktə açıqkən stage pan/zoom olanda overlay-i canlı sinxronlaşdır
+  useEffect(() => {
+    if (!editingId) return
+    const pos = computeEditPos(editingId)
+    if (pos) setEditPos(pos)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId, stagePos, stageScale])
 
   const handleRunsChange = (id: string, runs: TextRun[]) => {
     updateElement(id, { runs, text: runsToPlainText(runs) })
@@ -437,7 +454,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     if (tool === 'text') {
       const w = pos.x - (el.data.x || 0)
       const h = pos.y - (el.data.y || 0)
-      updateElement(drawingId.current, { width: w, height: h })
+      // Sürükləmə 10px-i keçən kimi area rejiminə keç ki, qutunun sərhədi
+      // dartılan ölçüyə canlı uyğunlaşsın (əks halda mouseup-a qədər görünmürdü)
+      const isArea = Math.abs(w) > 10 && Math.abs(h) > 10
+      updateElement(drawingId.current, { width: w, height: h, autoWidth: !isArea })
     } else if (['rect','circle','diamond','parallelogram','cross','cylinder'].includes(tool)) {
       let w = pos.x - (el.data.x || 0)
       let h = pos.y - (el.data.y || 0)
@@ -595,6 +615,21 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     }
   }
 
+  // Verilmiş enə görə mətnin daxildə tutduğu real hündürlük — qutu bundan aşağı kiçilməsin
+  const minTextAreaHeight = (el: CanvasElement, boxWidth: number) => {
+    const d = el.data as any
+    const defaults = getDefaults(d)
+    const layout = layoutText({
+      runs: getRuns(d),
+      defaults,
+      boxWidth: Math.max(boxWidth, 1),
+      align: (d.align ?? 'left') as Align,
+      lineHeight: d.lineHeight ?? 1.2,
+      letterSpacing: d.letterSpacing ?? 0,
+    })
+    return Math.max(layout.height, defaults.fontSize)
+  }
+
   // Mətn qutusu dartılanda hərflər deformasiya olmasın —
   // scale-i dərhal 1-ə qaytarıb en/hündürlüyü dəyişirik, mətn yenidən axır (Illustrator area type)
   const handleTextTransform = (id: string, e: Konva.KonvaEventObject<Event>) => {
@@ -602,8 +637,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     const sx = node.scaleX()
     const sy = node.scaleY()
     if (sx === 1 && sy === 1) return
+    const el = elementsRef.current.find((el) => el.id === id)
     const w = Math.max(24, node.width()  * sx)
-    const h = Math.max(16, node.height() * sy)
+    const minH = el ? minTextAreaHeight(el, w) : 16
+    const h = Math.max(minH, node.height() * sy)
     node.scaleX(1); node.scaleY(1)
     node.width(w);  node.height(h)
     updateElement(id, {

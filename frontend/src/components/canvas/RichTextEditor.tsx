@@ -36,26 +36,37 @@ export default function RichTextEditor({
   const d = el.data as any
   const defaults = getDefaults(d)
   const editorRef = useRef<HTMLDivElement>(null)
+  const toolbarRef = useRef<HTMLDivElement>(null)
   const selRef = useRef<{ start: number; end: number } | null>(null)
   const finishedRef = useRef(false)
+  const prevVersionRef = useRef(-1)                   // scale-only yenidənqurmanı version-dan ayırmaq üçün
   const [version, setVersion] = useState(0)          // yalnız stil tətbiqindən sonra artır
   const [restore, setRestore] = useState<{ start: number; end: number } | null>(null)
   const [uiStyle, setUiStyle] = useState(() => defaults)
 
-  // İlk HTML + stil tətbiqindən sonrakı yenidən qurma
+  // İlk HTML + stil tətbiqindən sonrakı yenidən qurma.
+  // `scale` də asılılıqdadır ki, redaktə zamanı canvas zoom olanda mətnin
+  // ölçüsü overlay-də dərhal yenilənsin (əks halda köhnə miqyasda qalırdı).
   useEffect(() => {
     const node = editorRef.current
     if (!node) return
+    const versionChanged = prevVersionRef.current !== version
+    prevVersionRef.current = version
+    const live = getSelectionOffsets(node)   // yenidənqurmadan əvvəlki cari seçim (zoom zamanı saxlamaq üçün)
     node.innerHTML = runsToHtml(getRuns(el.data), defaults, scale)
     node.focus()
-    if (restore) setSelectionOffsets(node, restore.start, restore.end)
-    else {
-      // yeni/boş mətn — hamısını seç ki dərhal yazmaq olsun
-      const len = runsToPlainText(getRuns(el.data)).length
-      setSelectionOffsets(node, 0, len)
+    if (versionChanged) {
+      if (restore) setSelectionOffsets(node, restore.start, restore.end)
+      else {
+        // yeni/boş mətn — hamısını seç ki dərhal yazmaq olsun
+        const len = runsToPlainText(getRuns(el.data)).length
+        setSelectionOffsets(node, 0, len)
+      }
+    } else if (live) {
+      setSelectionOffsets(node, live.start, live.end)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version])
+  }, [version, scale])
 
   // Seçimi izlə — toolbar düymələri fokusu itirəndə lazım olacaq
   useEffect(() => {
@@ -143,6 +154,7 @@ export default function RichTextEditor({
     <>
       {/* ── Seçilmiş hissəyə stil verən üzən panel ── */}
       <div
+        ref={toolbarRef}
         onMouseDown={keepFocus}
         style={{
           position: 'fixed',
@@ -165,6 +177,7 @@ export default function RichTextEditor({
 
         <select
           value={SIZES.includes(Math.round(uiStyle.fontSize)) ? Math.round(uiStyle.fontSize) : ''}
+          onMouseDown={(e) => e.stopPropagation()}
           onChange={(e) => applyPatch({ fontSize: parseInt(e.target.value, 10) })}
           className="text-xs border border-gray-200 rounded-md px-1.5 py-1 outline-none focus:border-indigo-400 bg-white w-14"
           title="Ölçü"
@@ -224,7 +237,13 @@ export default function RichTextEditor({
         contentEditable
         suppressContentEditableWarning
         onInput={handleInput}
-        onBlur={finish}
+        onBlur={(e) => {
+          // Fokus toolbar-a (məs. şrift/ölçü seçicisinə) keçibsə redaktəni bitirmə —
+          // əks halda dropdown açılan kimi editor bağlanırdı.
+          const next = e.relatedTarget as Node | null
+          if (next && toolbarRef.current?.contains(next)) return
+          finish()
+        }}
         onKeyDown={(e) => {
           e.stopPropagation()
           if (e.key === 'Escape') { e.preventDefault(); finish() }
@@ -245,6 +264,11 @@ export default function RichTextEditor({
           height: areaH ? areaH + 'px' : 'auto',
           minWidth: areaW ? undefined : 40,
           minHeight: (defaults.fontSize * (d.lineHeight ?? 1.2)) * scale,
+          // Konteynerin öz şrifti runs-la eyni olmalıdır — əks halda brauzer
+          // hər sətirdə görünməz defolt-şrift "strut"u yaradır (adətən 16px serif),
+          // bu da runs-un ölçüsü kiçik olanda sətirarası məsafəni süni şəkildə artırır.
+          fontFamily: defaults.fontFamily,
+          fontSize: defaults.fontSize * scale,
           textAlign: (d.align ?? 'left') as any,
           letterSpacing: ((d.letterSpacing ?? 0) * scale) + 'px',
           lineHeight: d.lineHeight ?? 1.2,
