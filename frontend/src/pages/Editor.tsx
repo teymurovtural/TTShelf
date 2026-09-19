@@ -26,6 +26,7 @@ export default function Editor() {
   const [canvasTitle, setCanvasTitle] = useState('')
   const [pdfOpen,     setPdfOpen]     = useState(false)
   const [pdfUrl,      setPdfUrl]      = useState('')
+  const [pdfWidth,    setPdfWidth]    = useState(420)
   const [loading,     setLoading]     = useState(true)
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
 
@@ -164,71 +165,100 @@ export default function Editor() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="text-gray-400 text-sm">Yüklənir...</div>
-      </div>
+        <div className="min-h-screen bg-white flex items-center justify-center">
+          <div className="text-gray-400 text-sm">Yüklənir...</div>
+        </div>
     )
   }
 
   return (
-    <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-white border-b border-gray-200 shrink-0">
-        <a
-          href="/dashboard"
-          className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors shrink-0"
-        >
-          <ArrowLeft size={17} />
-        </a>
-        <Toolbar
-          onExport={handleExport}
-          onTogglePdf={() => setPdfOpen((v) => !v)}
-          pdfOpen={pdfOpen}
-          isDirty={isDirty}
-          canvasTitle={canvasTitle}
-          onTitleChange={handleTitleChange}
-        />
-      </div>
-
-      {/* Main area */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Canvas area — tam genişlik */}
-        <div
-          ref={containerRef}
-          className="flex-1 overflow-hidden relative"
-        >
-          {containerSize.width > 0 && (
-            <CanvasBoard
-              ref={canvasBoardRef}
-              width={containerSize.width}
-              height={containerSize.height}
-            />
-          )}
-          {/* Sol panel — canvas üzərindən üzür */}
-          <LeftPanel />
+      <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-white border-b border-gray-200 shrink-0">
+          <a
+              href="/dashboard"
+              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors shrink-0"
+          >
+            <ArrowLeft size={17} />
+          </a>
+          <Toolbar
+              onExport={handleExport}
+              onTogglePdf={() => setPdfOpen((v) => !v)}
+              pdfOpen={pdfOpen}
+              isDirty={isDirty}
+              canvasTitle={canvasTitle}
+              onTitleChange={handleTitleChange}
+          />
         </div>
 
-        {/* PDF panel */}
-        {pdfOpen && pdfUrl && (
-          <div className="border-l border-gray-200 overflow-hidden shrink-0" style={{ width: 420 }}>
-            <PDFViewer
-              bookId={bookId || canvas?.book_id || ''}
-              fileUrl={pdfUrl}
-            />
+        {/* Main area */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Canvas area — tam genişlik */}
+          <div
+              ref={containerRef}
+              className="flex-1 overflow-hidden relative"
+          >
+            {containerSize.width > 0 && (
+                <CanvasBoard
+                    ref={canvasBoardRef}
+                    width={containerSize.width}
+                    height={containerSize.height}
+                />
+            )}
+            {/* Sol panel — canvas üzərindən üzür */}
+            <LeftPanel />
           </div>
-        )}
 
-        {pdfOpen && !pdfUrl && (
-          <div className="border-l border-gray-200 flex items-center justify-center bg-gray-50 shrink-0" style={{ width: 420 }}>
-            <div className="text-center text-gray-400 p-6">
-              <p className="text-sm mb-3">Kitab seçilməyib</p>
-              <a href="/dashboard" className="text-indigo-500 hover:text-indigo-600 text-sm">
-                Dashboard-dan kitab seç
-              </a>
-            </div>
-          </div>
-        )}
+          {/* PDF panel — drag ilə resize */}
+          {pdfOpen && pdfUrl && (
+              <>
+                {/* Divider — drag handle */}
+                <div
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      const startX = e.clientX
+                      const startW = pdfWidth
+                      const onMove = (ev: MouseEvent) => {
+                        const delta = startX - ev.clientX
+                        setPdfWidth(Math.max(280, Math.min(800, startW + delta)))
+                      }
+                      const onUp = () => {
+                        window.removeEventListener('mousemove', onMove)
+                        window.removeEventListener('mouseup', onUp)
+                      }
+                      window.addEventListener('mousemove', onMove)
+                      window.addEventListener('mouseup', onUp)
+                    }}
+                    style={{
+                      width: 5, flexShrink: 0, cursor: 'col-resize',
+                      background: 'transparent',
+                      borderLeft: '1px solid #e2e8f0',
+                      position: 'relative',
+                      zIndex: 10,
+                    }}
+                    onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#6366f1'}
+                    onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+                />
+                <div className="overflow-hidden shrink-0" style={{ width: pdfWidth }}>
+                  <PDFViewer
+                      bookId={bookId || canvas?.book_id || ''}
+                      fileUrl={pdfUrl}
+                  />
+                </div>
+              </>
+          )}
+
+          {pdfOpen && !pdfUrl && (
+              <div className="border-l border-gray-200 flex items-center justify-center bg-gray-50 shrink-0" style={{ width: 420 }}>
+                <div className="text-center text-gray-400 p-6">
+                  <p className="text-sm mb-3">Kitab seçilməyib</p>
+                  <a href="/dashboard" className="text-indigo-500 hover:text-indigo-600 text-sm">
+                    Dashboard-dan kitab seç
+                  </a>
+                </div>
+              </div>
+          )}
+        </div>
       </div>
-    </div>
   )
 }
