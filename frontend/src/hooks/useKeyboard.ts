@@ -10,7 +10,7 @@ export function useKeyboard() {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
 
       if (e.ctrlKey || e.metaKey) {
-        if (e.key === 'z') {
+        if (e.key === 'z' || e.key === 'Z') {
           e.preventDefault()
           if (e.shiftKey) redo()
           else undo()

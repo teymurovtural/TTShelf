@@ -150,6 +150,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         return
       }
     }
+    tr.nodes([])
     tr.getLayer()?.batchDraw()
   }, [selectedIds, editingId, elements])
 
@@ -547,8 +548,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
     const newId = drawingId.current
     drawingId.current = null
-    setTool('select')
-    setSelectedIds([newId])
+    if (tool === 'freehand') {
+      setSelectedIds([])
+    } else {
+      setTool('select')
+      setSelectedIds([newId])
+    }
   }
 
   // Element drag — tək və ya group
@@ -582,7 +587,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         minX = Math.min(minX, pts[i]);   maxX = Math.max(maxX, pts[i])
         minY = Math.min(minY, pts[i+1]); maxY = Math.max(maxY, pts[i+1])
       }
-      return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+      const pad = (d.strokeWidth as number ?? 2) / 2 + 10
+      return { x: minX - pad, y: minY - pad, w: Math.max(maxX - minX, pad * 2), h: Math.max(maxY - minY, pad * 2) }
     }
     if (isCentered) {
       const r = Math.abs(d.width ?? 0) / 2
@@ -611,7 +617,19 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       }
       isDraggingGroup.current = false
     } else {
-      updateElement(id, { x: e.target.x(), y: e.target.y() })
+      const el = elementsRef.current.find((el) => el.id === id)
+      if (el && ['line', 'arrow', 'freehand'].includes(el.type)) {
+        const nx = e.target.x()
+        const ny = e.target.y()
+        const pts = el.data.points || []
+        updateElement(id, {
+          x: 0, y: 0,
+          points: pts.map((v, i) => i % 2 === 0 ? v + nx : v + ny),
+        })
+        e.target.x(0); e.target.y(0)
+      } else {
+        updateElement(id, { x: e.target.x(), y: e.target.y() })
+      }
     }
   }
 
@@ -672,9 +690,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
     if (['line', 'arrow', 'freehand'].includes(el.type)) {
       const sx = node.scaleX(); const sy = node.scaleY()
+      const nx = node.x(); const ny = node.y()
       const pts = el.data.points || []
-      updateElement(id, { points: pts.map((v, i) => i % 2 === 0 ? v * sx : v * sy), scaleX: 1, scaleY: 1 })
+      updateElement(id, {
+        x: 0, y: 0,
+        points: pts.map((v, i) => i % 2 === 0 ? v * sx + nx : v * sy + ny),
+        scaleX: 1, scaleY: 1,
+      })
       node.scaleX(1); node.scaleY(1)
+      node.x(0); node.y(0)
       return
     }
 
