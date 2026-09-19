@@ -9,6 +9,14 @@
   --color-accent:    #4f46e5;
   --color-accent-h:  #4338ca;
   --color-danger:    #ef4444;
+
+  /* Toolbar */
+  --tb-bg:     #1e1e2e;
+  --tb-hover:  #2d2d44;
+  --tb-active: #4f46e5;
+  --tb-border: rgba(255,255,255,0.08);
+  --tb-text:   #c8c8d8;
+  --tb-icon:   #9090b0;
 }
 
 * {
@@ -21,6 +29,161 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+/* ── Canvas dot-grid fon ── */
+.canvas-dot-grid {
+  background-color: #f1f5f9;
+  background-image: radial-gradient(circle, #94a3b8 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* ── Floating Toolbar ── */
+.ftoolbar {
+  background: var(--tb-bg);
+  border: 1px solid var(--tb-border);
+  border-radius: 14px;
+  box-shadow:
+          0 4px 6px -1px rgba(0,0,0,0.3),
+          0 10px 25px -5px rgba(0,0,0,0.4),
+          0 0 0 1px rgba(255,255,255,0.04) inset;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  user-select: none;
+}
+
+.ftoolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  color: var(--tb-icon);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  position: relative;
+}
+
+.ftoolbar-btn:hover {
+  background: var(--tb-hover);
+  color: #e0e0f0;
+}
+
+.ftoolbar-btn.active {
+  background: var(--tb-active);
+  color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.4);
+}
+
+.ftoolbar-btn.danger:hover {
+  background: rgba(239,68,68,0.15);
+  color: #f87171;
+}
+
+.ftoolbar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--tb-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* Header bar */
+.header-bar {
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  height: 48px;
+}
+
+/* Canvas title input */
+.canvas-title-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1.5px solid transparent;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+  padding: 2px 4px;
+  width: 160px;
+  transition: border-color 0.15s;
+}
+.canvas-title-input:hover  { border-color: #cbd5e1; }
+.canvas-title-input:focus  { border-color: #6366f1; }
+.canvas-title-input::placeholder { color: #94a3b8; }
+
+/* Tooltip */
+.tooltip-container { position: relative; }
+.tooltip-container .tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15,23,42,0.9);
+  color: #e2e8f0;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+  z-index: 9999;
+}
+.tooltip-container:hover .tooltip { opacity: 1; }
+
+/* Stroke style buttons */
+.stroke-style-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1.5px solid #e2e8f0;
+  background: white;
+  cursor: pointer;
+  transition: all 0.1s;
+  color: #374151;
+}
+.stroke-style-btn:hover   { border-color: #6366f1; color: #4f46e5; background: #eef2ff; }
+.stroke-style-btn.active  { border-color: #4f46e5; background: #eef2ff; color: #4338ca; }
+
+/* Shape dropdown */
+.shape-dropdown {
+  background: #1e1e2e;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  z-index: 9999;
+}
+.shape-dropdown-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: #9090b0;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background 0.1s, color 0.1s;
+}
+.shape-dropdown-btn:hover  { background: #2d2d44; color: #e0e0f0; }
+.shape-dropdown-btn.active { background: #4f46e5; color: #ffffff; }
 
 /* Scrollbar */
 ::-webkit-scrollbar       { width: 6px; height: 6px; }

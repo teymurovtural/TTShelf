@@ -13,6 +13,48 @@ import RichTextEditor from './RichTextEditor'
 import { getDefaults, getRuns, layoutText, runsToPlainText, type Align } from './richText'
 
 // ---- Rounded polygon path helpers ----
+// ---- Sloppiness: xətt nöqtələrinə deterministik offset əlavə edir ----
+// seed-based pseudorandom — hər render eyni nəticə verir (element id-dən)
+function seededRand(seed: number) {
+  let s = seed
+  return () => {
+    s = (s * 1664525 + 1013904223) & 0xffffffff
+    return (s >>> 0) / 0xffffffff
+  }
+}
+
+function applySloppiness(points: number[], sloppiness: number, id: string): number[] {
+  if (!sloppiness || sloppiness === 0 || points.length < 4) return points
+  const amplitude = sloppiness === 1 ? 5 : sloppiness === 2 ? 12 : 0
+  if (amplitude === 0) return points
+  const seed = id.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
+  const rand = seededRand(seed)
+  const result = [...points]
+  const count = points.length / 2 // nöqtə sayı
+  for (let i = 0; i < points.length; i += 2) {
+    const ptIdx = i / 2
+    // Uç nöqtələrə (ilk və son) çox az, ortadasına çox offset ver
+    const edgeFactor = (ptIdx === 0 || ptIdx === count - 1) ? 0.15 : 1.0
+    result[i]   = points[i]   + (rand() - 0.5) * amplitude * 2 * edgeFactor
+    result[i+1] = points[i+1] + (rand() - 0.5) * amplitude * 2 * edgeFactor
+  }
+  return result
+}
+
+function applySloppinessPath(pathData: string, sloppiness: number, id: string): string {
+  if (!sloppiness || sloppiness === 0) return pathData
+  const amplitude = sloppiness === 1 ? 3 : 8
+  const seed = id.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
+  const rand = seededRand(seed)
+  // Yalnız koordinat rəqəmlərini jitter et
+  return pathData.replace(/(-?\d+\.?\d*)/g, (match, _, offset) => {
+    // Path komanda hərflərindən sonrakı rəqəmlər — M, L, Q, Z əmrləri deyil
+    const f = parseFloat(match)
+    if (isNaN(f)) return match
+    return String(f + (rand() - 0.5) * amplitude * 2)
+  })
+}
+
 function roundedPolygonPath(points: number[][], radius: number): string {
   const n = points.length
   let path = ''
@@ -78,928 +120,1193 @@ const SHAPE_DEFAULTS = {
 }
 
 const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
-  function CanvasBoard({ width, height }, ref) {
+    function CanvasBoard({ width, height }, ref) {
 
-  const {
-    elements, tool, selectedId, selectedIds,
-    addElement, updateElement, deleteSelected, deleteElement,
-    setSelectedId, setSelectedIds, setTool, pushHistory,
-  } = useCanvasStore()
+      const {
+        elements, tool, selectedId, selectedIds,
+        addElement, updateElement, deleteSelected, deleteElement,
+        setSelectedId, setSelectedIds, setTool, pushHistory,
+      } = useCanvasStore()
 
-  const stageRef       = useRef<Konva.Stage>(null)
-  const transformerRef = useRef<Konva.Transformer>(null)
-  const isDrawing      = useRef(false)
-  const drawingId      = useRef<string | null>(null)
-  const stagePosRef    = useRef({ x: 0, y: 0 })
-  const stageScaleRef  = useRef(1)
-  const isSpaceDown    = useRef(false)
-  const isShiftDown    = useRef(false)
-  const isPanning      = useRef(false)
-  const lastPanPos     = useRef({ x: 0, y: 0 })
-  const elementsRef    = useRef(elements)
+      const stageRef       = useRef<Konva.Stage>(null)
+      const transformerRef = useRef<Konva.Transformer>(null)
+      const isDrawing      = useRef(false)
+      const drawingId      = useRef<string | null>(null)
+      const stagePosRef    = useRef({ x: 0, y: 0 })
+      const stageScaleRef  = useRef(1)
+      const isSpaceDown    = useRef(false)
+      const isShiftDown    = useRef(false)
+      const isPanning      = useRef(false)
+      const lastPanPos     = useRef({ x: 0, y: 0 })
+      const elementsRef    = useRef(elements)
 
-  // Multi-drag
-  const isDraggingGroup   = useRef(false)
-  const dragStartPositions = useRef<Record<string, { x: number; y: number }>>({})
+      // Multi-drag
+      const isDraggingGroup   = useRef(false)
+      const dragStartPositions = useRef<Record<string, { x: number; y: number }>>({})
 
-  const [stagePos,   setStagePos]   = useState({ x: 0, y: 0 })
-  const [stageScale, setStageScale] = useState(1)
-  const [editingId,  setEditingId]  = useState<string | null>(null)
-  const [editPos,    setEditPos]    = useState({ x: 0, y: 0, scale: 1, areaW: undefined as number|undefined, areaH: undefined as number|undefined })
-  const [isSpacePan, setIsSpacePan] = useState(false)
+      const [stagePos,   setStagePos]   = useState({ x: 0, y: 0 })
+      const [stageScale, setStageScale] = useState(1)
+      const [editingId,  setEditingId]  = useState<string | null>(null)
+      const [editPos,    setEditPos]    = useState({ x: 0, y: 0, scale: 1, areaW: undefined as number|undefined, areaH: undefined as number|undefined })
+      const [isSpacePan, setIsSpacePan] = useState(false)
 
-  // Rubber band selection state
-  const [selBox, setSelBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
-  const selBoxRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
-  const selStart  = useRef<{ x: number; y: number } | null>(null)
+      // Rubber band selection state
+      const [selBox, setSelBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+      const selBoxRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+      const selStart  = useRef<{ x: number; y: number } | null>(null)
 
-  useEffect(() => { stagePosRef.current = stagePos },   [stagePos])
-  useEffect(() => { stageScaleRef.current = stageScale }, [stageScale])
-  useEffect(() => { elementsRef.current = elements },     [elements])
+      // Arrow/Line orta nöqtə drag
+      const midDragId  = useRef<string | null>(null)
+      const [midDragActive, setMidDragActive] = useState(false)
 
-  // Export
-  useImperativeHandle(ref, () => ({
-    exportImage: () => {
-      if (!stageRef.current) return null
-      const tr = transformerRef.current
-      tr?.hide(); stageRef.current.batchDraw()
-      const dataUrl = stageRef.current.toDataURL({ pixelRatio: 2, mimeType: 'image/png' })
-      tr?.show(); stageRef.current.batchDraw()
-      return dataUrl
-    },
-  }))
+      useEffect(() => { stagePosRef.current = stagePos },   [stagePos])
+      useEffect(() => { stageScaleRef.current = stageScale }, [stageScale])
+      useEffect(() => { elementsRef.current = elements },     [elements])
 
-  // Transformer — YALNIZ tək element seçiləndə işlət
-  // Çoxlu seçimdə Transformer.nodes([]) — viewport-u tərpətməsin
-  useEffect(() => {
-    const tr    = transformerRef.current
-    const stage = stageRef.current
-    if (!tr || !stage) return
+      // Export
+      useImperativeHandle(ref, () => ({
+        exportImage: () => {
+          if (!stageRef.current) return null
+          const tr = transformerRef.current
+          tr?.hide(); stageRef.current.batchDraw()
+          const dataUrl = stageRef.current.toDataURL({ pixelRatio: 2, mimeType: 'image/png' })
+          tr?.show(); stageRef.current.batchDraw()
+          return dataUrl
+        },
+      }))
 
-    if (selectedIds.length >= 1 && !editingId) {
-      const nodes = selectedIds
-        .map((sid) => stage.findOne(`#${sid}`))
-        .filter(Boolean) as Konva.Node[]
-      if (nodes.length > 0) {
-        const px = stage.x(); const py = stage.y()
-        const sx = stage.scaleX(); const sy = stage.scaleY()
-        tr.nodes(nodes)
-        stage.x(px); stage.y(py)
-        stage.scaleX(sx); stage.scaleY(sy)
-        stage.batchDraw()
-        return
-      }
-    }
-    tr.nodes([])
-    tr.getLayer()?.batchDraw()
-  }, [selectedIds, editingId, elements])
+      // Transformer — YALNIZ tək element seçiləndə işlət
+      // Çoxlu seçimdə Transformer.nodes([]) — viewport-u tərpətməsin
+      useEffect(() => {
+        const tr    = transformerRef.current
+        const stage = stageRef.current
+        if (!tr || !stage) return
 
-  // Space + drag pan
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !e.repeat) {
-        const tag = (e.target as HTMLElement).tagName
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return
-        e.preventDefault()
-        isSpaceDown.current = true
-        setIsSpacePan(true)
-      }
-      if (e.key === 'Shift') isShiftDown.current = true
-    }
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') {
-        isSpaceDown.current = false
-        isPanning.current   = false
-        setIsSpacePan(false)
-      }
-      if (e.key === 'Shift') isShiftDown.current = false
-    }
-    const onMouseDown = (e: MouseEvent) => {
-      if (isSpaceDown.current && e.button === 0) {
-        isPanning.current  = true
-        lastPanPos.current = { x: e.clientX, y: e.clientY }
-      }
-    }
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isPanning.current) return
-      const dx = e.clientX - lastPanPos.current.x
-      const dy = e.clientY - lastPanPos.current.y
-      lastPanPos.current = { x: e.clientX, y: e.clientY }
-      const newPos = { x: stagePosRef.current.x + dx, y: stagePosRef.current.y + dy }
-      stagePosRef.current = newPos
-      setStagePos({ ...newPos })
-    }
-    const onMouseUp = () => { isPanning.current = false }
+        // Arrow/Line seçildiğində Transformer-i gizlət — handle-lar ayrı Layer-dədir
+        const sel = selectedIds.length === 1
+            ? elementsRef.current.find(e => e.id === selectedIds[0])
+            : null
+        if (sel && ['line','arrow'].includes(sel.type)) {
+          tr.nodes([])
+          tr.getLayer()?.batchDraw()
+          return
+        }
 
-    window.addEventListener('keydown',   onKeyDown)
-    window.addEventListener('keyup',     onKeyUp)
-    window.addEventListener('mousedown', onMouseDown)
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup',   onMouseUp)
-    return () => {
-      window.removeEventListener('keydown',   onKeyDown)
-      window.removeEventListener('keyup',     onKeyUp)
-      window.removeEventListener('mousedown', onMouseDown)
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup',   onMouseUp)
-    }
-  }, [])
+        if (selectedIds.length >= 1 && !editingId) {
+          const nodes = selectedIds
+              .map((sid) => stage.findOne(`#${sid}`))
+              .filter(Boolean) as Konva.Node[]
+          if (nodes.length > 0) {
+            const px = stage.x(); const py = stage.y()
+            const sx = stage.scaleX(); const sy = stage.scaleY()
+            tr.nodes(nodes)
+            stage.x(px); stage.y(py)
+            stage.scaleX(sx); stage.scaleY(sy)
+            stage.batchDraw()
+            return
+          }
+        }
+        tr.nodes([])
+        tr.getLayer()?.batchDraw()
+      }, [selectedIds, editingId, elements])
 
-  // Delete key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement
-      const tag = target.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
-      if (target.isContentEditable) return       // mətn redaktəsi gedir
-      if (editingId) return
-      if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [deleteSelected, editingId])
+      // Space + drag pan
+      useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+          if (e.code === 'Space' && !e.repeat) {
+            const tag = (e.target as HTMLElement).tagName
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return
+            e.preventDefault()
+            isSpaceDown.current = true
+            setIsSpacePan(true)
+          }
+          if (e.key === 'Shift') isShiftDown.current = true
+        }
+        const onKeyUp = (e: KeyboardEvent) => {
+          if (e.code === 'Space') {
+            isSpaceDown.current = false
+            isPanning.current   = false
+            setIsSpacePan(false)
+          }
+          if (e.key === 'Shift') isShiftDown.current = false
+        }
+        const onMouseDown = (e: MouseEvent) => {
+          if (isSpaceDown.current && e.button === 0) {
+            isPanning.current  = true
+            lastPanPos.current = { x: e.clientX, y: e.clientY }
+          }
+        }
+        const onMouseMove = (e: MouseEvent) => {
+          if (!isPanning.current) return
+          const dx = e.clientX - lastPanPos.current.x
+          const dy = e.clientY - lastPanPos.current.y
+          lastPanPos.current = { x: e.clientX, y: e.clientY }
+          const newPos = { x: stagePosRef.current.x + dx, y: stagePosRef.current.y + dy }
+          stagePosRef.current = newPos
+          setStagePos({ ...newPos })
+        }
+        const onMouseUp = () => { isPanning.current = false }
 
-  // Ctrl+V paste
-  useEffect(() => {
-    const handlePaste = async (e: ClipboardEvent) => {
-      if (editingId) return
-      const items = e.clipboardData?.items
-      if (!items) return
-      for (const item of Array.from(items)) {
-        if (item.type.startsWith('image/')) {
-          const file = item.getAsFile()
-          if (!file) continue
-          try {
-            const res = await uploadApi.image(file)
-            const url = res.data.data.url
-            const img = new window.Image()
-            img.src = url
-            img.onload = () => {
-              addElement({
-                id: uuidv4(), canvas_id: '', type: 'image',
-                data: { x: 100, y: 100, width: Math.min(img.width / 2, 600), height: Math.min(img.height / 2, 600), src: url },
-                z_index: elements.length,
-                created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-              })
+        window.addEventListener('keydown',   onKeyDown)
+        window.addEventListener('keyup',     onKeyUp)
+        window.addEventListener('mousedown', onMouseDown)
+        window.addEventListener('mousemove', onMouseMove)
+        window.addEventListener('mouseup',   onMouseUp)
+        return () => {
+          window.removeEventListener('keydown',   onKeyDown)
+          window.removeEventListener('keyup',     onKeyUp)
+          window.removeEventListener('mousedown', onMouseDown)
+          window.removeEventListener('mousemove', onMouseMove)
+          window.removeEventListener('mouseup',   onMouseUp)
+        }
+      }, [])
+
+      // Delete key
+      useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+          const target = e.target as HTMLElement
+          const tag = target.tagName
+          if (tag === 'INPUT' || tag === 'TEXTAREA') return
+          if (target.isContentEditable) return       // mətn redaktəsi gedir
+          if (editingId) return
+          if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
+        }
+        window.addEventListener('keydown', handleKeyDown)
+        return () => window.removeEventListener('keydown', handleKeyDown)
+      }, [deleteSelected, editingId])
+
+      // Ctrl+V paste
+      useEffect(() => {
+        const handlePaste = async (e: ClipboardEvent) => {
+          if (editingId) return
+          const items = e.clipboardData?.items
+          if (!items) return
+          for (const item of Array.from(items)) {
+            if (item.type.startsWith('image/')) {
+              const file = item.getAsFile()
+              if (!file) continue
+              try {
+                const res = await uploadApi.image(file)
+                const url = res.data.data.url
+                const img = new window.Image()
+                img.src = url
+                img.onload = () => {
+                  addElement({
+                    id: uuidv4(), canvas_id: '', type: 'image',
+                    data: { x: 100, y: 100, width: Math.min(img.width / 2, 600), height: Math.min(img.height / 2, 600), src: url },
+                    z_index: elements.length,
+                    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+                  })
+                }
+              } catch (err) { console.error('Paste upload:', err) }
             }
-          } catch (err) { console.error('Paste upload:', err) }
+          }
+        }
+        window.addEventListener('paste', handlePaste)
+        return () => window.removeEventListener('paste', handlePaste)
+      }, [editingId, elements.length, addElement])
+
+      // Zoom
+      const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
+        e.evt.preventDefault()
+        const stage = stageRef.current
+        if (!stage) return
+        const oldScale = stageScaleRef.current
+        const pointer  = stage.getPointerPosition()
+        if (!pointer) return
+        const scaleBy  = 1.06
+        const newScale = Math.min(Math.max(e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy, 0.05), 10)
+        const newPos = {
+          x: pointer.x - (pointer.x - stagePosRef.current.x) / oldScale * newScale,
+          y: pointer.y - (pointer.y - stagePosRef.current.y) / oldScale * newScale,
+        }
+        setStageScale(newScale)
+        setStagePos(newPos)
+      }
+
+      const getPointerOnStage = () => {
+        const stage = stageRef.current
+        if (!stage) return { x: 0, y: 0 }
+        const pos = stage.getPointerPosition()
+        if (!pos) return { x: 0, y: 0 }
+        return {
+          x: (pos.x - stagePosRef.current.x) / stageScaleRef.current,
+          y: (pos.y - stagePosRef.current.y) / stageScaleRef.current,
         }
       }
-    }
-    window.addEventListener('paste', handlePaste)
-    return () => window.removeEventListener('paste', handlePaste)
-  }, [editingId, elements.length, addElement])
 
-  // Zoom
-  const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
-    e.evt.preventDefault()
-    const stage = stageRef.current
-    if (!stage) return
-    const oldScale = stageScaleRef.current
-    const pointer  = stage.getPointerPosition()
-    if (!pointer) return
-    const scaleBy  = 1.06
-    const newScale = Math.min(Math.max(e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy, 0.05), 10)
-    const newPos = {
-      x: pointer.x - (pointer.x - stagePosRef.current.x) / oldScale * newScale,
-      y: pointer.y - (pointer.y - stagePosRef.current.y) / oldScale * newScale,
-    }
-    setStageScale(newScale)
-    setStagePos(newPos)
-  }
-
-  const getPointerOnStage = () => {
-    const stage = stageRef.current
-    if (!stage) return { x: 0, y: 0 }
-    const pos = stage.getPointerPosition()
-    if (!pos) return { x: 0, y: 0 }
-    return {
-      x: (pos.x - stagePosRef.current.x) / stageScaleRef.current,
-      y: (pos.y - stagePosRef.current.y) / stageScaleRef.current,
-    }
-  }
-
-  // ── Mətn redaktəsi (rich text) ──
-  // Redaktə overlay-nin ekran mövqeyini/miqyasını hesablayır — həm redaktəyə
-  // başlayanda, həm də redaktə zamanı pan/zoom baş verəndə çağırılır ki,
-  // üzən qutu canvas-dakı fiqurdan "ayrılmasın".
-  const computeEditPos = (elId: string) => {
-    const el = elementsRef.current.find((e) => e.id === elId)
-    if (!el || el.type !== 'text') return null
-    const stage = stageRef.current
-    if (!stage) return null
-    const node = stage.findOne(`#${el.id}`)
-    if (!node) return null
-    const stageBox = stage.container().getBoundingClientRect()
-    const absPos   = node.getAbsolutePosition()
-    const sc       = stageScaleRef.current
-    const area     = isAreaText(el)
-    const box      = textBox(el)
-    return {
-      x: stageBox.left + absPos.x,
-      y: stageBox.top  + absPos.y,
-      scale: sc,
-      areaW: area ? box.width  * sc : undefined,
-      areaH: area ? box.height * sc : undefined,
-    }
-  }
-
-  const startEditing = (elId: string) => {
-    const pos = computeEditPos(elId)
-    if (!pos) return
-    setEditingId(elId)
-    setEditPos(pos)
-    transformerRef.current?.hide()
-    transformerRef.current?.getLayer()?.batchDraw()
-  }
-
-  // Redaktə açıqkən stage pan/zoom olanda overlay-i canlı sinxronlaşdır
-  useEffect(() => {
-    if (!editingId) return
-    const pos = computeEditPos(editingId)
-    if (pos) setEditPos(pos)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingId, stagePos, stageScale])
-
-  const handleRunsChange = (id: string, runs: TextRun[]) => {
-    updateElement(id, { runs, text: runsToPlainText(runs) })
-  }
-
-  const finishEditing = () => {
-    if (!editingId) return
-    const id = editingId
-    setEditingId(null)
-    transformerRef.current?.show()
-    transformerRef.current?.getLayer()?.batchDraw()
-
-    const el = elementsRef.current.find((e) => e.id === id)
-    // Tamamilə boş qalan mətn elementi canvas-da qalmasın
-    if (el && !runsToPlainText(getRuns(el.data)).trim()) {
-      deleteElement(id)
-      return
-    }
-    pushHistory()
-    setSelectedIds([id])
-  }
-
-  const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (isSpaceDown.current) return
-    if (editingId) { finishEditing(); return }
-
-    // Pan aləti — stage-i birbaşa sürüşdür
-    if (tool === 'pan') {
-      isPanning.current  = true
-      lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY }
-      return
-    }
-
-    // Text aləti aktiv olanda mövcud text elementinə klikləndikdə — düzəliş et
-    if (tool === 'text' && e.target !== stageRef.current && e.target.getType() !== 'Stage') {
-      const clickedId = e.target.id() || e.target.getParent()?.id()
-      const clickedEl = clickedId ? elementsRef.current.find((el) => el.id === clickedId) : null
-      if (clickedEl && clickedEl.type === 'text') {
-        e.cancelBubble = true
-        setTool('select')
-        setSelectedIds([clickedEl.id])
-        setTimeout(() => startEditing(clickedEl.id), 30)
-        return
+      // ── Mətn redaktəsi (rich text) ──
+      // Redaktə overlay-nin ekran mövqeyini/miqyasını hesablayır — həm redaktəyə
+      // başlayanda, həm də redaktə zamanı pan/zoom baş verəndə çağırılır ki,
+      // üzən qutu canvas-dakı fiqurdan "ayrılmasın".
+      const computeEditPos = (elId: string) => {
+        const el = elementsRef.current.find((e) => e.id === elId)
+        if (!el || el.type !== 'text') return null
+        const stage = stageRef.current
+        if (!stage) return null
+        const node = stage.findOne(`#${el.id}`)
+        if (!node) return null
+        const stageBox = stage.container().getBoundingClientRect()
+        const absPos   = node.getAbsolutePosition()
+        const sc       = stageScaleRef.current
+        const area     = isAreaText(el)
+        const box      = textBox(el)
+        return {
+          x: stageBox.left + absPos.x,
+          y: stageBox.top  + absPos.y,
+          scale: sc,
+          areaW: area ? box.width  * sc : undefined,
+          areaH: area ? box.height * sc : undefined,
+        }
       }
-    }
 
-
-
-    const pos      = getPointerOnStage()
-    const isStage = e.target === stageRef.current || e.target.getType() === 'Stage'
-
-    if (tool === 'select') {
-      if (isStage) {
-        setSelectedIds([])
-        selStart.current = pos
-        selBoxRef.current = { x: pos.x, y: pos.y, w: 0, h: 0 }
-        setSelBox({ x: pos.x, y: pos.y, w: 0, h: 0 })
+      const startEditing = (elId: string) => {
+        const pos = computeEditPos(elId)
+        if (!pos) return
+        setEditingId(elId)
+        setEditPos(pos)
+        transformerRef.current?.hide()
+        transformerRef.current?.getLayer()?.batchDraw()
       }
-      return
-    }
 
+      // Redaktə açıqkən stage pan/zoom olanda overlay-i canlı sinxronlaşdır
+      useEffect(() => {
+        if (!editingId) return
+        const pos = computeEditPos(editingId)
+        if (pos) setEditPos(pos)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [editingId, stagePos, stageScale])
 
-
-    const id = uuidv4()
-    drawingId.current  = id
-    isDrawing.current  = true
-    let data: ElementData = {}
-
-    if (tool === 'rect') {
-      data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.rect }
-    } else if (tool === 'circle') {
-      data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.circle }
-    } else if (['triangle','pentagon','hexagon','star'].includes(tool)) {
-      const defaults = (SHAPE_DEFAULTS as any)[tool] ?? SHAPE_DEFAULTS.rect
-      // Mərkəz koordinat sistemi — x/y mərkəzdir
-      data = { x: pos.x, y: pos.y, width: 0, height: 0, ...defaults }
-    } else if (['diamond','parallelogram','cross','cylinder'].includes(tool)) {
-      const defaults = (SHAPE_DEFAULTS as any)[tool] ?? SHAPE_DEFAULTS.rect
-      data = { x: pos.x, y: pos.y, width: 0, height: 0, ...defaults }
-    } else if (tool === 'line') {
-      data = { points: [pos.x, pos.y, pos.x, pos.y], ...SHAPE_DEFAULTS.line }
-    } else if (tool === 'arrow') {
-      data = { points: [pos.x, pos.y, pos.x, pos.y], ...SHAPE_DEFAULTS.arrow }
-    } else if (tool === 'freehand') {
-      data = { points: [pos.x, pos.y], ...SHAPE_DEFAULTS.freehand, lineCap: 'round', lineJoin: 'round' }
-    } else if (tool === 'text') {
-      // Text tool: mouseDown-da yalnız başlanğıc nöqtəni saxla
-      // mouseUp-da ölçüyə görə area və ya klik text yaradılır
-      isDrawing.current = true
-      drawingId.current = id
-      data = {
-        x: pos.x, y: pos.y, width: 0, height: 0,
-        ...SHAPE_DEFAULTS.text,
-        text: '', runs: [{ text: '' }], autoWidth: true,
-        align: 'left', lineHeight: 1.2, letterSpacing: 0,
+      const handleRunsChange = (id: string, runs: TextRun[]) => {
+        updateElement(id, { runs, text: runsToPlainText(runs) })
       }
-    }
 
-    addElement({ id, canvas_id: '', type: tool, data, z_index: elements.length, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-  }
+      const finishEditing = () => {
+        if (!editingId) return
+        const id = editingId
+        setEditingId(null)
+        transformerRef.current?.show()
+        transformerRef.current?.getLayer()?.batchDraw()
 
-  const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    // Pan aləti — stage sürüşdür
-    if (tool === 'pan' && isPanning.current) {
-      const dx = e.evt.clientX - lastPanPos.current.x
-      const dy = e.evt.clientY - lastPanPos.current.y
-      lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY }
-      const newPos = { x: stagePosRef.current.x + dx, y: stagePosRef.current.y + dy }
-      stagePosRef.current = newPos
-      setStagePos({ ...newPos })
-      return
-    }
-
-    const pos = getPointerOnStage()
-
-    // Rubber band — yalnız select alətində
-    if (selStart.current) {
-      const sx = selStart.current.x
-      const sy = selStart.current.y
-      const nb = {
-        x: Math.min(pos.x, sx), y: Math.min(pos.y, sy),
-        w: Math.abs(pos.x - sx), h: Math.abs(pos.y - sy),
+        const el = elementsRef.current.find((e) => e.id === id)
+        // Tamamilə boş qalan mətn elementi canvas-da qalmasın
+        if (el && !runsToPlainText(getRuns(el.data)).trim()) {
+          deleteElement(id)
+          return
+        }
+        pushHistory()
+        setSelectedIds([id])
       }
-      selBoxRef.current = nb
-      setSelBox(nb)
-      return
-    }
 
-    if (!isDrawing.current || !drawingId.current) return
-    const el = elements.find((el) => el.id === drawingId.current)
-    if (!el) return
+      const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+        if (isSpaceDown.current) return
+        if (editingId) { finishEditing(); return }
 
-    if (tool === 'text') {
-      const w = pos.x - (el.data.x || 0)
-      const h = pos.y - (el.data.y || 0)
-      // Sürükləmə 10px-i keçən kimi area rejiminə keç ki, qutunun sərhədi
-      // dartılan ölçüyə canlı uyğunlaşsın (əks halda mouseup-a qədər görünmürdü)
-      const isArea = Math.abs(w) > 10 && Math.abs(h) > 10
-      updateElement(drawingId.current, { width: w, height: h, autoWidth: !isArea })
-    } else if (['rect','circle','diamond','parallelogram','cross','cylinder'].includes(tool)) {
-      let w = pos.x - (el.data.x || 0)
-      let h = pos.y - (el.data.y || 0)
-      if (isShiftDown.current) {
-        const side = Math.max(Math.abs(w), Math.abs(h))
-        w = w < 0 ? -side : side
-        h = h < 0 ? -side : side
+        // Pan aləti — stage-i birbaşa sürüşdür
+        if (tool === 'pan') {
+          isPanning.current  = true
+          lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY }
+          return
+        }
+
+        // Text aləti aktiv olanda mövcud text elementinə klikləndikdə — düzəliş et
+        if (tool === 'text' && e.target !== stageRef.current && e.target.getType() !== 'Stage') {
+          const clickedId = e.target.id() || e.target.getParent()?.id()
+          const clickedEl = clickedId ? elementsRef.current.find((el) => el.id === clickedId) : null
+          if (clickedEl && clickedEl.type === 'text') {
+            e.cancelBubble = true
+            setTool('select')
+            setSelectedIds([clickedEl.id])
+            setTimeout(() => startEditing(clickedEl.id), 30)
+            return
+          }
+        }
+
+
+
+        const pos      = getPointerOnStage()
+        const isStage = e.target === stageRef.current || e.target.getType() === 'Stage'
+
+        if (tool === 'select') {
+          if (isStage) {
+            setSelectedIds([])
+            selStart.current = pos
+            selBoxRef.current = { x: pos.x, y: pos.y, w: 0, h: 0 }
+            setSelBox({ x: pos.x, y: pos.y, w: 0, h: 0 })
+          }
+          return
+        }
+
+
+
+        const id = uuidv4()
+        drawingId.current  = id
+        isDrawing.current  = true
+        let data: ElementData = {}
+
+        if (tool === 'rect') {
+          data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.rect }
+        } else if (tool === 'circle') {
+          data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.circle }
+        } else if (['triangle','pentagon','hexagon','star'].includes(tool)) {
+          const defaults = (SHAPE_DEFAULTS as any)[tool] ?? SHAPE_DEFAULTS.rect
+          // Mərkəz koordinat sistemi — x/y mərkəzdir
+          data = { x: pos.x, y: pos.y, width: 0, height: 0, ...defaults }
+        } else if (['diamond','parallelogram','cross','cylinder'].includes(tool)) {
+          const defaults = (SHAPE_DEFAULTS as any)[tool] ?? SHAPE_DEFAULTS.rect
+          data = { x: pos.x, y: pos.y, width: 0, height: 0, ...defaults }
+        } else if (tool === 'line') {
+          // 3 nöqtə: [x0,y0, mx,my, x1,y1] — orta nöqtə sürüklənərək əyilir
+          data = { points: [pos.x, pos.y, pos.x, pos.y, pos.x, pos.y], ...SHAPE_DEFAULTS.line }
+        } else if (tool === 'arrow') {
+          data = { points: [pos.x, pos.y, pos.x, pos.y, pos.x, pos.y], ...SHAPE_DEFAULTS.arrow }
+        } else if (tool === 'freehand') {
+          data = { points: [pos.x, pos.y], ...SHAPE_DEFAULTS.freehand, lineCap: 'round', lineJoin: 'round' }
+        } else if (tool === 'text') {
+          // Text tool: mouseDown-da yalnız başlanğıc nöqtəni saxla
+          // mouseUp-da ölçüyə görə area və ya klik text yaradılır
+          isDrawing.current = true
+          drawingId.current = id
+          data = {
+            x: pos.x, y: pos.y, width: 0, height: 0,
+            ...SHAPE_DEFAULTS.text,
+            text: '', runs: [{ text: '' }], autoWidth: true,
+            align: 'left', lineHeight: 1.2, letterSpacing: 0,
+          }
+        }
+
+        addElement({ id, canvas_id: '', type: tool, data, z_index: elements.length, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       }
-      updateElement(drawingId.current, { width: w, height: h })
-    } else if (['triangle','pentagon','hexagon','star'].includes(tool)) {
-      // Mərkəzdən radius kimi çək — x/y sabit qalır (başlanğıc = mərkəz)
-      let radius = Math.max(Math.abs(pos.x - (el.data.x || 0)), Math.abs(pos.y - (el.data.y || 0)))
-      if (isShiftDown.current) {
-        // Shift: simmetrik
-      }
-      updateElement(drawingId.current, { width: radius * 2, height: radius * 2 })
-    } else if (tool === 'line' || tool === 'arrow') {
-      const pts = el.data.points || []
-      let ex = pos.x; let ey = pos.y
-      if (isShiftDown.current) {
-        // Shift: 45° snap
-        const dx = pos.x - pts[0]; const dy = pos.y - pts[1]
-        const angle = Math.atan2(dy, dx)
-        const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4)
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        ex = pts[0] + Math.cos(snap) * dist
-        ey = pts[1] + Math.sin(snap) * dist
-      }
-      updateElement(drawingId.current, { points: [pts[0], pts[1], ex, ey] })
-    } else if (tool === 'freehand') {
-      updateElement(drawingId.current, { points: [...(el.data.points || []), pos.x, pos.y] })
-    }
-  }
 
-  const handleMouseUp = () => {
-    if (tool === 'pan') { isPanning.current = false; return }
-    // Rubber band bitdi — içindəki elementləri seç
-    if (selStart.current) {
-      const currentBox = selBoxRef.current
-      if (currentBox && currentBox.w > 5 && currentBox.h > 5) {
-        const { x, y, w, h } = currentBox
-        const inside = elementsRef.current.filter((el) => {
-          const bb = getElBBox(el)
-          // Tam içəridə deyil, toxunsa da seç (intersects)
-          return bb.x < x + w && bb.x + bb.w > x &&
-                 bb.y < y + h && bb.y + bb.h > y
-        }).map((el) => el.id)
-        setSelectedIds(inside)
-      } else {
-        // Kiçik klik — seçimi sıfırla
-        setSelectedIds([])
+      const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+        // Pan aləti — stage sürüşdür
+        if (tool === 'pan' && isPanning.current) {
+          const dx = e.evt.clientX - lastPanPos.current.x
+          const dy = e.evt.clientY - lastPanPos.current.y
+          lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY }
+          const newPos = { x: stagePosRef.current.x + dx, y: stagePosRef.current.y + dy }
+          stagePosRef.current = newPos
+          setStagePos({ ...newPos })
+          return
+        }
+
+        const pos = getPointerOnStage()
+
+        // Rubber band — yalnız select alətində
+        if (selStart.current) {
+          const sx = selStart.current.x
+          const sy = selStart.current.y
+          const nb = {
+            x: Math.min(pos.x, sx), y: Math.min(pos.y, sy),
+            w: Math.abs(pos.x - sx), h: Math.abs(pos.y - sy),
+          }
+          selBoxRef.current = nb
+          setSelBox(nb)
+          return
+        }
+
+        if (!isDrawing.current || !drawingId.current) return
+        const el = elements.find((el) => el.id === drawingId.current)
+        if (!el) return
+
+        if (tool === 'text') {
+          const w = pos.x - (el.data.x || 0)
+          const h = pos.y - (el.data.y || 0)
+          // Çəkmə zamanı həmişə autoWidth:false — kənar xətt görünsün
+          updateElement(drawingId.current, { width: w, height: h, autoWidth: false })
+        } else if (['rect','circle','diamond','parallelogram','cross','cylinder'].includes(tool)) {
+          let w = pos.x - (el.data.x || 0)
+          let h = pos.y - (el.data.y || 0)
+          if (isShiftDown.current) {
+            const side = Math.max(Math.abs(w), Math.abs(h))
+            w = w < 0 ? -side : side
+            h = h < 0 ? -side : side
+          }
+          updateElement(drawingId.current, { width: w, height: h })
+        } else if (['triangle','pentagon','hexagon','star'].includes(tool)) {
+          // Mərkəzdən radius kimi çək — x/y sabit qalır (başlanğıc = mərkəz)
+          let radius = Math.max(Math.abs(pos.x - (el.data.x || 0)), Math.abs(pos.y - (el.data.y || 0)))
+          if (isShiftDown.current) {
+            // Shift: simmetrik
+          }
+          updateElement(drawingId.current, { width: radius * 2, height: radius * 2 })
+        } else if (tool === 'line' || tool === 'arrow') {
+          const pts = el.data.points || []
+          let ex = pos.x; let ey = pos.y
+          if (isShiftDown.current) {
+            // Shift: 45° snap
+            const dx = pos.x - pts[0]; const dy = pos.y - pts[1]
+            const angle = Math.atan2(dy, dx)
+            const snap = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4)
+            const dist = Math.sqrt(dx * dx + dy * dy)
+            ex = pts[0] + Math.cos(snap) * dist
+            ey = pts[1] + Math.sin(snap) * dist
+          }
+          // 3 nöqtə: başlanğıc, orta (avtomatik), son
+          const mx = (pts[0] + ex) / 2
+          const my = (pts[1] + ey) / 2
+          updateElement(drawingId.current, { points: [pts[0], pts[1], mx, my, ex, ey] })
+        } else if (tool === 'freehand') {
+          updateElement(drawingId.current, { points: [...(el.data.points || []), pos.x, pos.y] })
+        }
       }
-      selStart.current = null
-      selBoxRef.current = null
-      setSelBox(null)
-      return
-    }
 
-    if (!isDrawing.current || !drawingId.current) return
-    isDrawing.current = false
+      const handleMouseUp = () => {
+        if (tool === 'pan') { isPanning.current = false; return }
+        // Rubber band bitdi — içindəki elementləri seç
+        if (selStart.current) {
+          const currentBox = selBoxRef.current
+          if (currentBox && currentBox.w > 5 && currentBox.h > 5) {
+            const { x, y, w, h } = currentBox
+            const inside = elementsRef.current.filter((el) => {
+              const bb = getElBBox(el)
+              // Tam içəridə deyil, toxunsa da seç (intersects)
+              return bb.x < x + w && bb.x + bb.w > x &&
+                  bb.y < y + h && bb.y + bb.h > y
+            }).map((el) => el.id)
+            setSelectedIds(inside)
+          } else {
+            // Kiçik klik — seçimi sıfırla
+            setSelectedIds([])
+          }
+          selStart.current = null
+          selBoxRef.current = null
+          setSelBox(null)
+          return
+        }
 
-    // Text tool: area > 10px olarsa area text, kiçik olarsa klik text
-    const currentEl = elementsRef.current.find((e) => e.id === drawingId.current)
-    if (currentEl && currentEl.type === 'text') {
-      const id = drawingId.current
-      const rawW = currentEl.data.width ?? 0
-      const rawH = currentEl.data.height ?? 0
-      const w = Math.abs(rawW)
-      const h = Math.abs(rawH)
-      if (w > 10 && h > 10) {
-        // Area mətn — mənfi istiqamətdə çəkiləni normallaşdır
+        if (!isDrawing.current || !drawingId.current) return
+        isDrawing.current = false
+
+        // Text tool: area > 10px olarsa area text, kiçik olarsa klik text
+        const currentEl = elementsRef.current.find((e) => e.id === drawingId.current)
+        if (currentEl && currentEl.type === 'text') {
+          const id = drawingId.current
+          const rawW = currentEl.data.width ?? 0
+          const rawH = currentEl.data.height ?? 0
+          const w = Math.abs(rawW)
+          const h = Math.abs(rawH)
+          if (w > 10 && h > 10) {
+            // Area mətn — mənfi istiqamətdə çəkiləni normallaşdır
+            updateElement(id, {
+              x: (currentEl.data.x ?? 0) + Math.min(rawW, 0),
+              y: (currentEl.data.y ?? 0) + Math.min(rawH, 0),
+              width: w, height: h, autoWidth: false,
+            })
+          } else {
+            // Nöqtə mətni — en/hündürlük avtomatik
+            updateElement(id, { width: 0, height: 0, autoWidth: true })
+          }
+          drawingId.current = null
+          setTool('select')
+          setSelectedIds([id])
+          setTimeout(() => startEditing(id), 50)
+          return
+        }
+
+        const newId = drawingId.current
+        drawingId.current = null
+        if (tool === 'freehand') {
+          setSelectedIds([])
+        } else {
+          setTool('select')
+          setSelectedIds([newId])
+        }
+      }
+
+      // Element drag — tək və ya group
+      const handleDragStart = (id: string) => {
+        if (selectedIds.length > 1 && selectedIds.includes(id)) {
+          isDraggingGroup.current = true
+          // Hər elementin başlanğıc mövqeyini saxla
+          const positions: Record<string, { x: number; y: number }> = {}
+          elements.forEach((el) => {
+            if (selectedIds.includes(el.id)) {
+              positions[el.id] = { x: el.data.x ?? 0, y: el.data.y ?? 0 }
+            }
+          })
+          dragStartPositions.current = positions
+        }
+      }
+
+
+      // Element bounding box — sol yuxarı künc + ölçü
+      const getElBBox = (el: CanvasElement) => {
+        const d = el.data
+        if (el.type === 'text') {
+          const b = textBox(el)
+          return { x: d.x ?? 0, y: d.y ?? 0, w: b.width, h: b.height }
+        }
+        const isCentered = ['triangle','pentagon','hexagon','star'].includes(el.type)
+        if (d.points && d.points.length >= 2) {
+          const pts = d.points
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+          for (let i = 0; i < pts.length - 1; i += 2) {
+            minX = Math.min(minX, pts[i]);   maxX = Math.max(maxX, pts[i])
+            minY = Math.min(minY, pts[i+1]); maxY = Math.max(maxY, pts[i+1])
+          }
+          // Line/arrow/freehand üçün böyük pad — nazik xətlər seçilə bilsin
+          // Freehand üçün daha az pad (çoxlu nöqtəsi var, bbox düzgündür)
+          const pad = el.type === 'freehand'
+              ? (d.strokeWidth as number ?? 2) / 2 + 8
+              : (d.strokeWidth as number ?? 2) / 2 + 20
+          return { x: minX - pad, y: minY - pad, w: Math.max(maxX - minX, pad * 2), h: Math.max(maxY - minY, pad * 2) }
+        }
+        if (isCentered) {
+          const r = Math.abs(d.width ?? 0) / 2
+          return { x: (d.x ?? 0) - r, y: (d.y ?? 0) - r, w: r * 2, h: r * 2 }
+        }
+        // Cylinder — d.x/d.y sol-üst künc, offset yoxdur
+        if (el.type === 'cylinder') {
+          return { x: d.x ?? 0, y: d.y ?? 0, w: Math.abs(d.width ?? 0), h: Math.abs(d.height ?? 0) }
+        }
+        // Shape-lər — pad yoxdur, dəqiq bbox
+        return {
+          x: d.x ?? 0, y: d.y ?? 0,
+          w: Math.abs(d.width ?? 0), h: Math.abs(d.height ?? 0)
+        }
+      }
+
+      const handleDragEnd = (id: string, e: Konva.KonvaEventObject<DragEvent>) => {
+        pushHistory()
+        const el = elementsRef.current.find((el) => el.id === id)
+        if (isDraggingGroup.current && selectedIds.length > 1 && selectedIds.includes(id)) {
+          const newX = e.target.x()
+          const newY = e.target.y()
+          const startPos = dragStartPositions.current[id]
+          if (startPos) {
+            const dx = newX - startPos.x
+            const dy = newY - startPos.y
+            selectedIds.forEach((sid) => {
+              const sp = dragStartPositions.current[sid]
+              if (sp) updateElement(sid, { x: sp.x + dx, y: sp.y + dy })
+            })
+          }
+          isDraggingGroup.current = false
+        } else {
+          const el = elementsRef.current.find((el) => el.id === id)
+          if (el && ['line', 'arrow', 'freehand'].includes(el.type)) {
+            const nx = e.target.x()
+            const ny = e.target.y()
+            const pts = el.data.points || []
+            updateElement(id, {
+              x: 0, y: 0,
+              points: pts.map((v, i) => i % 2 === 0 ? v + nx : v + ny),
+            })
+            e.target.x(0); e.target.y(0)
+          } else {
+            updateElement(id, { x: e.target.x(), y: e.target.y() })
+          }
+        }
+      }
+
+      // Verilmiş enə görə mətnin daxildə tutduğu real hündürlük — qutu bundan aşağı kiçilməsin
+      const minTextAreaHeight = (el: CanvasElement, boxWidth: number) => {
+        const d = el.data as any
+        const defaults = getDefaults(d)
+        const layout = layoutText({
+          runs: getRuns(d),
+          defaults,
+          boxWidth: Math.max(boxWidth, 1),
+          align: (d.align ?? 'left') as Align,
+          lineHeight: d.lineHeight ?? 1.2,
+          letterSpacing: d.letterSpacing ?? 0,
+        })
+        return Math.max(layout.height, defaults.fontSize)
+      }
+
+      // Mətn qutusu dartılanda hərflər deformasiya olmasın —
+      // scale-i dərhal 1-ə qaytarıb en/hündürlüyü dəyişirik, mətn yenidən axır (Illustrator area type)
+      const handleTextTransform = (id: string, e: Konva.KonvaEventObject<Event>) => {
+        const node = e.target as Konva.Group
+        const sx = node.scaleX()
+        const sy = node.scaleY()
+        if (sx === 1 && sy === 1) return
+        const el = elementsRef.current.find((el) => el.id === id)
+        const w = Math.max(24, node.width()  * sx)
+        const minH = el ? minTextAreaHeight(el, w) : 16
+        const h = Math.max(minH, node.height() * sy)
+        node.scaleX(1); node.scaleY(1)
+        node.width(w);  node.height(h)
         updateElement(id, {
-          x: (currentEl.data.x ?? 0) + Math.min(rawW, 0),
-          y: (currentEl.data.y ?? 0) + Math.min(rawH, 0),
-          width: w, height: h, autoWidth: false,
+          x: node.x(), y: node.y(),
+          width: w, height: h,
+          rotation: node.rotation(),
+          autoWidth: false,
+          scaleX: 1, scaleY: 1,
         })
-      } else {
-        // Nöqtə mətni — en/hündürlük avtomatik
-        updateElement(id, { width: 0, height: 0, autoWidth: true })
       }
-      drawingId.current = null
-      setTool('select')
-      setSelectedIds([id])
-      setTimeout(() => startEditing(id), 50)
-      return
-    }
 
-    const newId = drawingId.current
-    drawingId.current = null
-    if (tool === 'freehand') {
-      setSelectedIds([])
-    } else {
-      setTool('select')
-      setSelectedIds([newId])
-    }
-  }
+      const handleTextTransformEnd = (id: string, e: Konva.KonvaEventObject<Event>) => {
+        handleTextTransform(id, e)
+        const node = e.target as Konva.Group
+        node.scaleX(1); node.scaleY(1)
+        updateElement(id, {
+          x: node.x(), y: node.y(),
+          width: node.width(), height: node.height(),
+          rotation: node.rotation(), autoWidth: false, scaleX: 1, scaleY: 1,
+        })
+        pushHistory()
+      }
 
-  // Element drag — tək və ya group
-  const handleDragStart = (id: string) => {
-    if (selectedIds.length > 1 && selectedIds.includes(id)) {
-      isDraggingGroup.current = true
-      // Hər elementin başlanğıc mövqeyini saxla
-      const positions: Record<string, { x: number; y: number }> = {}
-      elements.forEach((el) => {
-        if (selectedIds.includes(el.id)) {
-          positions[el.id] = { x: el.data.x ?? 0, y: el.data.y ?? 0 }
+      const handleTransformEnd = (id: string, e: Konva.KonvaEventObject<Event>) => {
+        pushHistory()
+        const node = e.target
+        const el   = elementsRef.current.find((el) => el.id === id)
+        if (!el) return
+
+        if (['line', 'arrow', 'freehand'].includes(el.type)) {
+          const sx = node.scaleX(); const sy = node.scaleY()
+          const nx = node.x(); const ny = node.y()
+          const pts = el.data.points || []
+          updateElement(id, {
+            x: 0, y: 0,
+            points: pts.map((v, i) => i % 2 === 0 ? v * sx + nx : v * sy + ny),
+            scaleX: 1, scaleY: 1,
+          })
+          node.scaleX(1); node.scaleY(1)
+          node.x(0); node.y(0)
+          return
         }
-      })
-      dragStartPositions.current = positions
-    }
-  }
 
+        const isPathShape = ['triangle','pentagon','hexagon','star','cross','parallelogram','cylinder','diamond'].includes(el.type)
 
-  // Element bounding box — sol yuxarı künc + ölçü
-  const getElBBox = (el: CanvasElement) => {
-    const d = el.data
-    if (el.type === 'text') {
-      const b = textBox(el)
-      return { x: d.x ?? 0, y: d.y ?? 0, w: b.width, h: b.height }
-    }
-    const isCentered = ['triangle','pentagon','hexagon','star'].includes(el.type)
-    if (d.points && d.points.length >= 2) {
-      const pts = d.points
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      for (let i = 0; i < pts.length - 1; i += 2) {
-        minX = Math.min(minX, pts[i]);   maxX = Math.max(maxX, pts[i])
-        minY = Math.min(minY, pts[i+1]); maxY = Math.max(maxY, pts[i+1])
-      }
-      const pad = (d.strokeWidth as number ?? 2) / 2 + 10
-      return { x: minX - pad, y: minY - pad, w: Math.max(maxX - minX, pad * 2), h: Math.max(maxY - minY, pad * 2) }
-    }
-    if (isCentered) {
-      const r = Math.abs(d.width ?? 0) / 2
-      return { x: (d.x ?? 0) - r, y: (d.y ?? 0) - r, w: r * 2, h: r * 2 }
-    }
-    return {
-      x: d.x ?? 0, y: d.y ?? 0,
-      w: Math.abs(d.width ?? 0), h: Math.abs(d.height ?? 0)
-    }
-  }
+        if (isPathShape) {
+          const sx   = node.scaleX(); const sy = node.scaleY()
+          const oldW = Math.abs(el.data.width  ?? 0)
+          const oldH = Math.abs(el.data.height ?? 0)
+          updateElement(id, {
+            x: node.x(), y: node.y(),
+            width:    oldW * Math.abs(sx),
+            height:   oldH * Math.abs(sy),
+            rotation: node.rotation(),
+            scaleX: 1, scaleY: 1,
+          })
+          node.scaleX(1); node.scaleY(1)
+          return
+        }
 
-  const handleDragEnd = (id: string, e: Konva.KonvaEventObject<DragEvent>) => {
-    pushHistory()
-    const el = elementsRef.current.find((el) => el.id === id)
-    if (isDraggingGroup.current && selectedIds.length > 1 && selectedIds.includes(id)) {
-      const newX = e.target.x()
-      const newY = e.target.y()
-      const startPos = dragStartPositions.current[id]
-      if (startPos) {
-        const dx = newX - startPos.x
-        const dy = newY - startPos.y
-        selectedIds.forEach((sid) => {
-          const sp = dragStartPositions.current[sid]
-          if (sp) updateElement(sid, { x: sp.x + dx, y: sp.y + dy })
+        // Rect, circle, diamond, cylinder, image, text
+        updateElement(id, {
+          x: node.x(), y: node.y(),
+          width:  node.width()  * node.scaleX(),
+          height: node.height() * node.scaleY(),
+          rotation: node.rotation(), scaleX: 1, scaleY: 1,
         })
+        node.scaleX(1); node.scaleY(1)
       }
-      isDraggingGroup.current = false
-    } else {
-      const el = elementsRef.current.find((el) => el.id === id)
-      if (el && ['line', 'arrow', 'freehand'].includes(el.type)) {
-        const nx = e.target.x()
-        const ny = e.target.y()
+
+      const handleElementClick = (el: CanvasElement, e: Konva.KonvaEventObject<MouseEvent>) => {
+        if (tool !== 'select') return
+
+        // Group seçimi — bu elementin groupId-si varsa, hamısını seç
+        const groupId = el.data.groupId as string | undefined
+        const groupMemberIds = groupId
+            ? elements.filter((e) => e.data.groupId === groupId).map((e) => e.id)
+            : [el.id]
+
+        if (e.evt.shiftKey) {
+          // Shift+klik — əlavə seç / çıxart
+          const allSelected = groupMemberIds.every((id) => selectedIds.includes(id))
+          if (allSelected) {
+            setSelectedIds(selectedIds.filter((id) => !groupMemberIds.includes(id)))
+          } else {
+            setSelectedIds([...new Set([...selectedIds, ...groupMemberIds])])
+          }
+        } else {
+          setSelectedIds(groupMemberIds)
+        }
+      }
+
+      const commonProps = (el: CanvasElement) => ({
+        id: el.id,
+        draggable: tool === 'select',
+        opacity: el.data.opacity ?? 1,
+        onClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
+          e.cancelBubble = true
+          handleElementClick(el, e)
+        },
+        onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
+          e.cancelBubble = true
+          if (el.type === 'text') startEditing(el.id)
+        },
+        onDragStart: () => handleDragStart(el.id),
+        onDragEnd:   (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
+        onTransformEnd: (e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e),
+      })
+
+      const renderElement = (el: CanvasElement) => {
+        const d = el.data; const cp = commonProps(el)
+        switch (el.type) {
+          case 'rect': {
+            const slop = (d as any).sloppiness ?? 0
+            const jitter = slop === 1 ? 1.5 : slop === 2 ? 3 : 0
+            const cr = d.cornerRadius as any ?? 0
+            return <Rect key={el.id} {...cp} x={(d.x??0) + (jitter ? (Math.sin(el.id.charCodeAt(0))*jitter) : 0)}
+                         y={(d.y??0) + (jitter ? (Math.cos(el.id.charCodeAt(1))*jitter) : 0)}
+                         width={Math.abs(d.width||0) + (jitter ? Math.abs(Math.sin(el.id.charCodeAt(2))*jitter) : 0)}
+                         height={Math.abs(d.height||0) + (jitter ? Math.abs(Math.cos(el.id.charCodeAt(3))*jitter) : 0)}
+                         offsetX={d.width&&d.width<0?Math.abs(d.width):0} offsetY={d.height&&d.height<0?Math.abs(d.height):0}
+                         fill={d.fill==='transparent'?undefined:d.fill} stroke={d.stroke==='transparent'?undefined:d.stroke}
+                         strokeWidth={d.strokeWidth} rotation={d.rotation}
+                         cornerRadius={slop > 0 ? (Array.isArray(cr) ? cr.map((v:number)=>v+slop*2) : (cr as number)+slop*2) : cr}
+                         dash={d.dash} />
+          }
+          case 'circle': {
+            const slop = (d as any).sloppiness ?? 0
+            const jitter = slop === 1 ? 1.5 : slop === 2 ? 4 : 0
+            const j = (i: number) => jitter ? Math.sin(el.id.charCodeAt(i) + i) * jitter : 0
+            return <Rect key={el.id} {...cp}
+                         x={(d.x??0)+j(0)} y={(d.y??0)+j(1)}
+                         width={Math.abs(d.width||0)+Math.abs(j(2))} height={Math.abs(d.height||0)+Math.abs(j(3))}
+                         offsetX={d.width&&d.width<0?Math.abs(d.width):0} offsetY={d.height&&d.height<0?Math.abs(d.height):0}
+                         fill={d.fill==='transparent'?undefined:d.fill} stroke={d.stroke==='transparent'?undefined:d.stroke}
+                         strokeWidth={d.strokeWidth}
+                         cornerRadius={d.cornerRadius as any ?? 99999} rotation={d.rotation}
+                         dash={d.dash} />
+          }
+          case 'line': {
+            const pts = d.points || []
+            const slop = (d as any).sloppiness ?? 0
+            const hasBend = pts.length >= 6 && (() => {
+              const mx = (pts[0] + pts[4]) / 2; const my = (pts[1] + pts[5]) / 2
+              return Math.abs(pts[2] - mx) > 5 || Math.abs(pts[3] - my) > 5
+            })()
+
+            const buildLinePts = (): number[] => {
+              const x0 = pts[0], y0 = pts[1]
+              const x1 = pts[pts.length-2], y1 = pts[pts.length-1]
+              const mx = pts.length >= 6 ? pts[2] : (x0+x1)/2
+              const my = pts.length >= 6 ? pts[3] : (y0+y1)/2
+
+              if (slop === 0) {
+                // Düz və ya əyri — sadəcə points-i qaytar
+                return hasBend ? pts : [x0,y0,x1,y1]
+              }
+
+              // Xəttin uzunluğunu tap — offset ona nisbətən olsun
+              const len = Math.hypot(x1-x0, y1-y0)
+              // Perpendikulyar istiqaməti hesabla
+              const dx = x1-x0, dy = y1-y0
+              const dist = Math.hypot(dx, dy) || 1
+              const px = -dy/dist, py = dx/dist  // perpendicular unit vector
+
+              const seed = el.id.split('').reduce((a,c)=>a+c.charCodeAt(0),0)
+              const rnd = seededRand(seed)
+
+              if (slop === 1) {
+                // 1 əyrilik — 2 kontrol nöqtəsi ilə S-forması (slop=2-nin yumşaq versiyası)
+                const amp = len * 0.18
+                const sign = rnd() > 0.5 ? 1 : -1
+                const p1x = x0 + dx*0.25 + px*amp*sign
+                const p1y = y0 + dy*0.25 + py*amp*sign
+                const p2x = x0 + dx*0.75 + px*amp*(-sign)
+                const p2y = y0 + dy*0.75 + py*amp*(-sign)
+                return [x0,y0, p1x,p1y, p2x,p2y, x1,y1]
+              } else {
+                // 2 əyrilik — 4 kontrol nöqtəsi ilə W/S forması
+                const amp = len * 0.28
+                const sign = rnd() > 0.5 ? 1 : -1
+                // Xəttin 4 bərabər hissəsindəki kontrol nöqtələri — əks istiqamətdə
+                const p1x = x0 + dx*0.2  + px*amp*sign
+                const p1y = y0 + dy*0.2  + py*amp*sign
+                const p2x = x0 + dx*0.45 + px*amp*(-sign)*0.7
+                const p2y = y0 + dy*0.45 + py*amp*(-sign)*0.7
+                const p3x = x0 + dx*0.65 + px*amp*sign*0.8
+                const p3y = y0 + dy*0.65 + py*amp*sign*0.8
+                const p4x = x0 + dx*0.85 + px*amp*(-sign)*0.5
+                const p4y = y0 + dy*0.85 + py*amp*(-sign)*0.5
+                // Catmull-Rom spline: p1..p4 arasından keç
+                const splinePts = [x0,y0, p1x,p1y, p2x,p2y, p3x,p3y, p4x,p4y, x1,y1]
+                return splinePts
+              }
+            }
+
+            const renderPts = buildLinePts()
+            return (
+                <Line key={el.id} {...cp} points={renderPts} stroke={d.stroke} strokeWidth={d.strokeWidth}
+                      lineCap="round" lineJoin="round"
+                      tension={slop >= 1 ? 0.5 : hasBend ? 0.5 : 0}
+                      dash={d.dash}
+                />
+            )
+          }
+          case 'arrow': {
+            const pts = d.points || []
+            const slop = (d as any).sloppiness ?? 0
+            const hasBend = pts.length >= 6 && (() => {
+              const mx = (pts[0] + pts[4]) / 2; const my = (pts[1] + pts[5]) / 2
+              return Math.abs(pts[2] - mx) > 5 || Math.abs(pts[3] - my) > 5
+            })()
+            const buildArrowPts = (): number[] => {
+              const x0=pts[0], y0=pts[1]
+              const x1=pts[pts.length-2], y1=pts[pts.length-1]
+              const mx = pts.length >= 6 ? pts[2] : (x0+x1)/2
+              const my = pts.length >= 6 ? pts[3] : (y0+y1)/2
+              const dx=x1-x0, dy=y1-y0
+              const dist=Math.hypot(dx,dy)||1
+              const px=-dy/dist, py=dx/dist
+              const len=dist
+              const seed=el.id.split('').reduce((a,c)=>a+c.charCodeAt(0),0)
+              const rnd=seededRand(seed)
+              if (slop === 0 && !hasBend) return [x0,y0,x1,y1]
+              if (slop === 0) {
+                const result: number[] = []
+                for (let i=0;i<=14;i++){
+                  const t=i/14
+                  result.push(
+                      (1-t)*(1-t)*x0+2*(1-t)*t*mx+t*t*x1,
+                      (1-t)*(1-t)*y0+2*(1-t)*t*my+t*t*y1
+                  )
+                }
+                return result
+              } else if (slop === 1) {
+                const amp=len*0.18
+                const sign=rnd()>0.5?1:-1
+                const p1x=x0+dx*0.25+px*amp*sign
+                const p1y=y0+dy*0.25+py*amp*sign
+                const p2x=x0+dx*0.75+px*amp*(-sign)
+                const p2y=y0+dy*0.75+py*amp*(-sign)
+                return [x0,y0, p1x,p1y, p2x,p2y, x1,y1]
+              } else {
+                const amp=len*0.28
+                const sign=rnd()>0.5?1:-1
+                const p1x=x0+dx*0.2 +px*amp*sign
+                const p1y=y0+dy*0.2 +py*amp*sign
+                const p2x=x0+dx*0.45+px*amp*(-sign)*0.7
+                const p2y=y0+dy*0.45+py*amp*(-sign)*0.7
+                const p3x=x0+dx*0.65+px*amp*sign*0.8
+                const p3y=y0+dy*0.65+py*amp*sign*0.8
+                const p4x=x0+dx*0.85+px*amp*(-sign)*0.5
+                const p4y=y0+dy*0.85+py*amp*(-sign)*0.5
+                return [x0,y0, p1x,p1y, p2x,p2y, p3x,p3y, p4x,p4y, x1,y1]
+              }
+            }
+            const sw = d.strokeWidth ?? 2
+            return (
+                <Arrow key={el.id} {...cp}
+                       points={buildArrowPts()}
+                       stroke={d.stroke} strokeWidth={sw}
+                       fill={d.stroke}
+                       pointerLength={Math.max(12, sw * 5)}
+                       pointerWidth={Math.max(10, sw * 4)}
+                       tension={slop >= 1 ? 0.5 : 0} lineCap="round" lineJoin="round"
+                       dash={d.dash}
+                />
+            )
+          }
+          case 'freehand': {
+            const slop = (d as any).sloppiness ?? 0
+            return <Line key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth}
+                         tension={slop === 0 ? 0.5 : slop === 1 ? 0.65 : 0.8}
+                         lineCap="round" lineJoin="round" dash={d.dash} />
+          }
+          case 'text':
+            return (
+                <RichTextShape
+                    key={el.id}
+                    el={el}
+                    draggable={tool === 'select' && editingId !== el.id}
+                    selected={selectedIds.includes(el.id)}
+                    editing={editingId === el.id}
+                    onSelect={(e) => { e.cancelBubble = true; handleElementClick(el, e) }}
+                    onDblClick={(e) => { e.cancelBubble = true; startEditing(el.id) }}
+                    onDragStart={() => handleDragStart(el.id)}
+                    onDragEnd={(e) => handleDragEnd(el.id, e)}
+                    onTransform={(e) => handleTextTransform(el.id, e)}
+                    onTransformEnd={(e) => handleTextTransformEnd(el.id, e)}
+                />
+            )
+
+          case 'triangle':
+          case 'pentagon':
+          case 'hexagon': {
+            const sides  = el.type === 'triangle' ? 3 : el.type === 'pentagon' ? 5 : 6
+            const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
+            const cr = (d.cornerRadius as any) ?? 0
+            const rx = w / 2; const ry = h / 2
+            const pts: number[][] = []
+            for (let i = 0; i < sides; i++) {
+              const angle = (Math.PI * 2 * i / sides) - Math.PI / 2
+              pts.push([rx + rx * Math.cos(angle), ry + ry * Math.sin(angle)])
+            }
+            const pathData = roundedPolygonPath(pts, cr)
+            return <Path key={el.id} {...cp}
+                         x={d.x ?? 0} y={d.y ?? 0}
+                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
+                         fill={d.fill==='transparent'?undefined:d.fill}
+                         stroke={d.stroke==='transparent'?undefined:d.stroke}
+                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
+                         hitFunc={(ctx: any, shape: any) => {
+                           ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
+                           ctx.fillStrokeShape(shape)
+                         }} />
+          }
+
+          case 'star': {
+            const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
+            const cr = (d.cornerRadius as any) ?? 0
+            const outerRx = w / 2; const outerRy = h / 2
+            const innerRx = outerRx * 0.45; const innerRy = outerRy * 0.45
+            const pts: number[][] = []
+            for (let i = 0; i < 10; i++) {
+              const angle = (Math.PI * i / 5) - Math.PI / 2
+              const rx = i % 2 === 0 ? outerRx : innerRx
+              const ry = i % 2 === 0 ? outerRy : innerRy
+              pts.push([outerRx + rx * Math.cos(angle), outerRy + ry * Math.sin(angle)])
+            }
+            const pathData = roundedPolygonPath(pts, cr)
+            return <Path key={el.id} {...cp}
+                         x={d.x ?? 0} y={d.y ?? 0}
+                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
+                         fill={d.fill==='transparent'?undefined:d.fill}
+                         stroke={d.stroke==='transparent'?undefined:d.stroke}
+                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
+                         hitFunc={(ctx: any, shape: any) => {
+                           ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
+                           ctx.fillStrokeShape(shape)
+                         }} />
+          }
+
+          case 'diamond': {
+            const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
+            const cr = (d.cornerRadius as any) ?? 0
+            const diamondPts: number[][] = [[w/2,0],[w,h/2],[w/2,h],[0,h/2]]
+            const pathData = roundedPolygonPath(diamondPts, cr)
+            return <Path key={el.id} {...cp}
+                         x={d.x ?? 0} y={d.y ?? 0}
+                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
+                         fill={d.fill==='transparent'?undefined:d.fill}
+                         stroke={d.stroke==='transparent'?undefined:d.stroke}
+                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
+                         hitFunc={(ctx: any, shape: any) => {
+                           ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
+                           ctx.fillStrokeShape(shape)
+                         }} />
+          }
+
+          case 'parallelogram': {
+            const pw = Math.abs(d.width ?? 0); const ph = Math.abs(d.height ?? 0)
+            const cr = (d.cornerRadius as any) ?? 0
+            const skew = pw * 0.25
+            const paraPts: number[][] = [[skew,0],[pw,0],[pw-skew,ph],[0,ph]]
+            const pathData = roundedPolygonPath(paraPts, cr)
+            return <Path key={el.id} {...cp}
+                         x={d.x ?? 0} y={d.y ?? 0}
+                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
+                         fill={d.fill==='transparent'?undefined:d.fill}
+                         stroke={d.stroke==='transparent'?undefined:d.stroke}
+                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
+                         hitFunc={(ctx: any, shape: any) => {
+                           ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.closePath()
+                           ctx.fillStrokeShape(shape)
+                         }} />
+          }
+
+          case 'cross': {
+            const cw = Math.abs(d.width??0); const ch = Math.abs(d.height??0)
+            const t = cw/3; const t2 = ch/3
+            const cr = (d.cornerRadius as any) ?? 0
+            const crossPts = [
+              [t, 0], [cw-t, 0], [cw-t, t2], [cw, t2],
+              [cw, ch-t2], [cw-t, ch-t2], [cw-t, ch], [t, ch],
+              [t, ch-t2], [0, ch-t2], [0, t2], [t, t2],
+            ]
+            const pathData = roundedPolygonPath(crossPts, cr)
+            return <Path key={el.id} {...cp}
+                         x={d.x??0} y={d.y??0}
+                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
+                         fill={d.fill==='transparent'?undefined:d.fill}
+                         stroke={d.stroke==='transparent'?undefined:d.stroke}
+                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
+                         hitFunc={(ctx: any, shape: any) => {
+                           ctx.beginPath(); ctx.rect(0, 0, cw, ch); ctx.closePath()
+                           ctx.fillStrokeShape(shape)
+                         }} />
+          }
+
+          case 'cylinder': {
+            const cyW = Math.abs(d.width??0); const cyH = Math.abs(d.height??0)
+            const ry = Math.max(cyH * 0.15, 8)
+            const fill = d.fill==='transparent'?undefined:d.fill
+            const stroke = d.stroke==='transparent'?undefined:d.stroke
+            return (
+                <Group key={el.id} {...cp}
+                       x={d.x??0} y={d.y??0}
+                       width={cyW} height={cyH}
+                       rotation={d.rotation??0}
+                       opacity={d.opacity??1}
+                >
+                  {/* Gövdə */}
+                  <Rect
+                      x={0} y={ry} width={cyW} height={cyH - ry*2}
+                      fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} dash={d.dash}/>
+                  {/* Alt ellips */}
+                  <Ellipse
+                      x={cyW/2} y={cyH - ry}
+                      radiusX={cyW/2} radiusY={ry}
+                      fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} dash={d.dash}/>
+                  {/* Üst ellips */}
+                  <Ellipse
+                      x={cyW/2} y={ry}
+                      radiusX={cyW/2} radiusY={ry}
+                      fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} dash={d.dash}/>
+                </Group>
+            )
+          }
+
+          case 'image':
+            return <ImageElement key={el.id} el={el} commonProps={cp} />
+          default: return null
+        }
+      }
+
+      const editingEl = editingId ? elements.find((e) => e.id === editingId) : null
+
+      // ── Arrow/Line handle-ları — ayrı Layer-də render edilir ki Transformer ilə konflikt olmasın ──
+      const renderLineHandles = () => {
+        if (tool !== 'select' || selectedIds.length !== 1) return null
+        const el = elements.find(e => e.id === selectedIds[0])
+        if (!el || !['line','arrow'].includes(el.type)) return null
         const pts = el.data.points || []
-        updateElement(id, {
-          x: 0, y: 0,
-          points: pts.map((v, i) => i % 2 === 0 ? v + nx : v + ny),
-        })
-        e.target.x(0); e.target.y(0)
-      } else {
-        updateElement(id, { x: e.target.x(), y: e.target.y() })
-      }
-    }
-  }
+        if (pts.length < 6) return null
 
-  // Verilmiş enə görə mətnin daxildə tutduğu real hündürlük — qutu bundan aşağı kiçilməsin
-  const minTextAreaHeight = (el: CanvasElement, boxWidth: number) => {
-    const d = el.data as any
-    const defaults = getDefaults(d)
-    const layout = layoutText({
-      runs: getRuns(d),
-      defaults,
-      boxWidth: Math.max(boxWidth, 1),
-      align: (d.align ?? 'left') as Align,
-      lineHeight: d.lineHeight ?? 1.2,
-      letterSpacing: d.letterSpacing ?? 0,
-    })
-    return Math.max(layout.height, defaults.fontSize)
-  }
+        // Scale-ə görə handle ölçüsünü tənzimlə — zoom edəndə handle-lar çox böyüməsin
+        const sc = stageScaleRef.current
+        const hs = Math.max(8, Math.min(14, 10 / sc))  // ekran pikseli olaraq sabit görünür
+        const hs2 = hs / 2
 
-  // Mətn qutusu dartılanda hərflər deformasiya olmasın —
-  // scale-i dərhal 1-ə qaytarıb en/hündürlüyü dəyişirik, mətn yenidən axır (Illustrator area type)
-  const handleTextTransform = (id: string, e: Konva.KonvaEventObject<Event>) => {
-    const node = e.target as Konva.Group
-    const sx = node.scaleX()
-    const sy = node.scaleY()
-    if (sx === 1 && sy === 1) return
-    const el = elementsRef.current.find((el) => el.id === id)
-    const w = Math.max(24, node.width()  * sx)
-    const minH = el ? minTextAreaHeight(el, w) : 16
-    const h = Math.max(minH, node.height() * sy)
-    node.scaleX(1); node.scaleY(1)
-    node.width(w);  node.height(h)
-    updateElement(id, {
-      x: node.x(), y: node.y(),
-      width: w, height: h,
-      rotation: node.rotation(),
-      autoWidth: false,
-      scaleX: 1, scaleY: 1,
-    })
-  }
+        const updatePts = (newPts: number[]) => updateElement(el.id, { points: newPts })
 
-  const handleTextTransformEnd = (id: string, e: Konva.KonvaEventObject<Event>) => {
-    handleTextTransform(id, e)
-    const node = e.target as Konva.Group
-    node.scaleX(1); node.scaleY(1)
-    updateElement(id, {
-      x: node.x(), y: node.y(),
-      width: node.width(), height: node.height(),
-      rotation: node.rotation(), autoWidth: false, scaleX: 1, scaleY: 1,
-    })
-    pushHistory()
-  }
-
-  const handleTransformEnd = (id: string, e: Konva.KonvaEventObject<Event>) => {
-    pushHistory()
-    const node = e.target
-    const el   = elementsRef.current.find((el) => el.id === id)
-    if (!el) return
-
-    if (['line', 'arrow', 'freehand'].includes(el.type)) {
-      const sx = node.scaleX(); const sy = node.scaleY()
-      const nx = node.x(); const ny = node.y()
-      const pts = el.data.points || []
-      updateElement(id, {
-        x: 0, y: 0,
-        points: pts.map((v, i) => i % 2 === 0 ? v * sx + nx : v * sy + ny),
-        scaleX: 1, scaleY: 1,
-      })
-      node.scaleX(1); node.scaleY(1)
-      node.x(0); node.y(0)
-      return
-    }
-
-    const isPathShape = ['triangle','pentagon','hexagon','star','cross','parallelogram','cylinder','diamond'].includes(el.type)
-
-    if (isPathShape) {
-      const sx   = node.scaleX(); const sy = node.scaleY()
-      const oldW = Math.abs(el.data.width  ?? 0)
-      const oldH = Math.abs(el.data.height ?? 0)
-      updateElement(id, {
-        x: node.x(), y: node.y(),
-        width:    oldW * Math.abs(sx),
-        height:   oldH * Math.abs(sy),
-        rotation: node.rotation(),
-        scaleX: 1, scaleY: 1,
-      })
-      node.scaleX(1); node.scaleY(1)
-      return
-    }
-
-    // Rect, circle, diamond, cylinder, image, text
-    updateElement(id, {
-      x: node.x(), y: node.y(),
-      width:  node.width()  * node.scaleX(),
-      height: node.height() * node.scaleY(),
-      rotation: node.rotation(), scaleX: 1, scaleY: 1,
-    })
-    node.scaleX(1); node.scaleY(1)
-  }
-
-  const handleElementClick = (el: CanvasElement, e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (tool !== 'select') return
-
-    // Group seçimi — bu elementin groupId-si varsa, hamısını seç
-    const groupId = el.data.groupId as string | undefined
-    const groupMemberIds = groupId
-      ? elements.filter((e) => e.data.groupId === groupId).map((e) => e.id)
-      : [el.id]
-
-    if (e.evt.shiftKey) {
-      // Shift+klik — əlavə seç / çıxart
-      const allSelected = groupMemberIds.every((id) => selectedIds.includes(id))
-      if (allSelected) {
-        setSelectedIds(selectedIds.filter((id) => !groupMemberIds.includes(id)))
-      } else {
-        setSelectedIds([...new Set([...selectedIds, ...groupMemberIds])])
-      }
-    } else {
-      setSelectedIds(groupMemberIds)
-    }
-  }
-
-  const commonProps = (el: CanvasElement) => ({
-    id: el.id,
-    draggable: tool === 'select',
-    opacity: el.data.opacity ?? 1,
-    onClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
-      e.cancelBubble = true
-      handleElementClick(el, e)
-    },
-    onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
-      e.cancelBubble = true
-      if (el.type === 'text') startEditing(el.id)
-    },
-    onDragStart: () => handleDragStart(el.id),
-    onDragEnd:   (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
-    onTransformEnd: (e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e),
-  })
-
-  const renderElement = (el: CanvasElement) => {
-    const d = el.data; const cp = commonProps(el)
-    switch (el.type) {
-      case 'rect':
-        return <Rect key={el.id} {...cp} x={d.x} y={d.y}
-          width={Math.abs(d.width||0)} height={Math.abs(d.height||0)}
-          offsetX={d.width&&d.width<0?Math.abs(d.width):0} offsetY={d.height&&d.height<0?Math.abs(d.height):0}
-          fill={d.fill==='transparent'?undefined:d.fill} stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={d.rotation}
-          cornerRadius={d.cornerRadius as any ?? 0} />
-      case 'circle':
-        return <Rect key={el.id} {...cp} x={d.x} y={d.y}
-          width={Math.abs(d.width||0)} height={Math.abs(d.height||0)}
-          offsetX={d.width&&d.width<0?Math.abs(d.width):0} offsetY={d.height&&d.height<0?Math.abs(d.height):0}
-          fill={d.fill==='transparent'?undefined:d.fill} stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth}
-          cornerRadius={d.cornerRadius as any ?? 99999} rotation={d.rotation} />
-      case 'line':
-        return <Line key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth} lineCap="round" lineJoin="round" />
-      case 'arrow':
-        return <Arrow key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth} fill={d.stroke} pointerLength={12} pointerWidth={10} />
-      case 'freehand':
-        return <Line key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth} tension={0.5} lineCap="round" lineJoin="round" />
-      case 'text':
         return (
-          <RichTextShape
-            key={el.id}
-            el={el}
-            draggable={tool === 'select' && editingId !== el.id}
-            selected={selectedIds.includes(el.id)}
-            editing={editingId === el.id}
-            onSelect={(e) => { e.cancelBubble = true; handleElementClick(el, e) }}
-            onDblClick={(e) => { e.cancelBubble = true; startEditing(el.id) }}
-            onDragStart={() => handleDragStart(el.id)}
-            onDragEnd={(e) => handleDragEnd(el.id, e)}
-            onTransform={(e) => handleTextTransform(el.id, e)}
-            onTransformEnd={(e) => handleTextTransformEnd(el.id, e)}
-          />
-        )
+            <>
+              {/* Uç nöqtələr — ağ kvadrat, mavi kənar */}
+              {[
+                { dataIdx: 0 },
+                { dataIdx: 4 },
+              ].map(({ dataIdx }) => {
+                const px = pts[dataIdx]; const py = pts[dataIdx+1]
+                return (
+                    <Rect key={`h-end-${dataIdx}`}
+                          x={px - hs2} y={py - hs2}
+                          width={hs} height={hs}
+                          fill="#ffffff" stroke="#4f46e5" strokeWidth={Math.max(1.5, 2/sc)}
+                          cornerRadius={2}
+                          draggable
+                          onMouseDown={e => { e.cancelBubble = true }}
+                          onDragMove={e => {
+                            e.cancelBubble = true
+                            const node = e.target
+                            const nx = node.x() + hs2; const ny = node.y() + hs2
+                            const cur = [...(elementsRef.current.find(v=>v.id===el.id)?.data.points || pts)]
+                            cur[dataIdx] = nx; cur[dataIdx+1] = ny
+                            // Orta nöqtə hələ sürüklənməyibsə avtomatik mərkəzdə saxla
+                            const defMx=(cur[0]+cur[4])/2; const defMy=(cur[1]+cur[5])/2
+                            if (Math.hypot(cur[2]-defMx, cur[3]-defMy) < 20) {
+                              cur[2]=defMx; cur[3]=defMy
+                            }
+                            updatePts(cur)
+                            node.x(nx-hs2); node.y(ny-hs2)
+                          }}
+                          onDragEnd={() => pushHistory()}
+                    />
+                )
+              })}
 
-      case 'triangle':
-      case 'pentagon':
-      case 'hexagon': {
-        const sides  = el.type === 'triangle' ? 3 : el.type === 'pentagon' ? 5 : 6
-        const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
-        const cr = (d.cornerRadius as any) ?? 0
-        const rx = w / 2; const ry = h / 2
-        const pts: number[][] = []
-        for (let i = 0; i < sides; i++) {
-          const angle = (Math.PI * 2 * i / sides) - Math.PI / 2
-          pts.push([rx + rx * Math.cos(angle), ry + ry * Math.sin(angle)])
-        }
-        const pathData = roundedPolygonPath(pts, cr)
-        return <Path key={el.id} {...cp}
-          x={d.x ?? 0} y={d.y ?? 0}
-          data={pathData}
-          fill={d.fill==='transparent'?undefined:d.fill}
-          stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
-          hitFunc={(ctx: any, shape: any) => {
-            ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
-            ctx.fillStrokeShape(shape)
-          }} />
-      }
-
-      case 'star': {
-        const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
-        const cr = (d.cornerRadius as any) ?? 0
-        const outerRx = w / 2; const outerRy = h / 2
-        const innerRx = outerRx * 0.45; const innerRy = outerRy * 0.45
-        const pts: number[][] = []
-        for (let i = 0; i < 10; i++) {
-          const angle = (Math.PI * i / 5) - Math.PI / 2
-          const rx = i % 2 === 0 ? outerRx : innerRx
-          const ry = i % 2 === 0 ? outerRy : innerRy
-          pts.push([outerRx + rx * Math.cos(angle), outerRy + ry * Math.sin(angle)])
-        }
-        const pathData = roundedPolygonPath(pts, cr)
-        return <Path key={el.id} {...cp}
-          x={d.x ?? 0} y={d.y ?? 0}
-          data={pathData}
-          fill={d.fill==='transparent'?undefined:d.fill}
-          stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
-          hitFunc={(ctx: any, shape: any) => {
-            ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
-            ctx.fillStrokeShape(shape)
-          }} />
-      }
-
-      case 'diamond': {
-        const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
-        const pathData = `M ${w/2} 0 L ${w} ${h/2} L ${w/2} ${h} L 0 ${h/2} Z`
-        return <Path key={el.id} {...cp}
-          x={d.x ?? 0} y={d.y ?? 0}
-          data={pathData}
-          fill={d.fill==='transparent'?undefined:d.fill}
-          stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
-          hitFunc={(ctx: any, shape: any) => {
-            ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
-            ctx.fillStrokeShape(shape)
-          }} />
-      }
-
-      case 'parallelogram': {
-        const pw = Math.abs(d.width ?? 0); const ph = Math.abs(d.height ?? 0)
-        const skew = pw * 0.25
-        const pathData = `M ${skew} 0 L ${pw} 0 L ${pw - skew} ${ph} L 0 ${ph} Z`
-        return <Path key={el.id} {...cp}
-          x={d.x ?? 0} y={d.y ?? 0}
-          data={pathData}
-          fill={d.fill==='transparent'?undefined:d.fill}
-          stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
-          hitFunc={(ctx: any, shape: any) => {
-            ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.closePath()
-            ctx.fillStrokeShape(shape)
-          }} />
-      }
-
-      case 'cross': {
-        const cw = Math.abs(d.width??0); const ch = Math.abs(d.height??0)
-        const t = cw/3; const t2 = ch/3
-        const cr = (d.cornerRadius as any) ?? 0
-        const crossPts = [
-          [t, 0], [cw-t, 0], [cw-t, t2], [cw, t2],
-          [cw, ch-t2], [cw-t, ch-t2], [cw-t, ch], [t, ch],
-          [t, ch-t2], [0, ch-t2], [0, t2], [t, t2],
-        ]
-        const pathData = roundedPolygonPath(crossPts, cr)
-        return <Path key={el.id} {...cp}
-          x={d.x??0} y={d.y??0}
-          data={pathData}
-          fill={d.fill==='transparent'?undefined:d.fill}
-          stroke={d.stroke==='transparent'?undefined:d.stroke}
-          strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0}
-          hitFunc={(ctx: any, shape: any) => {
-            ctx.beginPath(); ctx.rect(0, 0, cw, ch); ctx.closePath()
-            ctx.fillStrokeShape(shape)
-          }} />
-      }
-
-      case 'cylinder': {
-        const cyW = Math.abs(d.width??0); const cyH = Math.abs(d.height??0)
-        const ry = Math.max(cyH * 0.15, 8)
-        const fill = d.fill==='transparent'?undefined:d.fill
-        const stroke = d.stroke==='transparent'?undefined:d.stroke
-        return (
-          <Group key={el.id} {...cp} x={d.x??0} y={d.y??0} width={cyW} height={cyH}>
-            {/* Gövdə */}
-            <Rect
-              x={0} y={ry} width={cyW} height={cyH - ry*2}
-              fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} />
-            {/* Alt ellips (əvvəl çəkilir ki üst üstündə olsun) */}
-            <Ellipse
-              x={cyW/2} y={cyH - ry}
-              radiusX={cyW/2} radiusY={ry}
-              fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} />
-            {/* Üst ellips */}
-            <Ellipse
-              x={cyW/2} y={ry}
-              radiusX={cyW/2} radiusY={ry}
-              fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} />
-          </Group>
+              {/* Orta nöqtə — indigo dairə, sürükləyərək əy */}
+              {(() => {
+                const mx=pts[2], my=pts[3]
+                const ms = hs + 2; const ms2 = ms/2
+                return (
+                    <Rect key="h-mid"
+                          x={mx-ms2} y={my-ms2}
+                          width={ms} height={ms}
+                          fill="#6366f1" stroke="#ffffff" strokeWidth={Math.max(1.5, 2/sc)}
+                          cornerRadius={ms2}
+                          draggable
+                          onMouseDown={e => { e.cancelBubble = true }}
+                          onDragMove={e => {
+                            e.cancelBubble = true
+                            const node = e.target
+                            const nx=node.x()+ms2; const ny=node.y()+ms2
+                            const cur=[...(elementsRef.current.find(v=>v.id===el.id)?.data.points||pts)]
+                            cur[2]=nx; cur[3]=ny
+                            updatePts(cur)
+                            node.x(nx-ms2); node.y(ny-ms2)
+                          }}
+                          onDblClick={() => {
+                            const cur=[...(elementsRef.current.find(v=>v.id===el.id)?.data.points||pts)]
+                            cur[2]=(cur[0]+cur[4])/2; cur[3]=(cur[1]+cur[5])/2
+                            updatePts(cur); pushHistory()
+                          }}
+                          onDragEnd={() => pushHistory()}
+                    />
+                )
+              })()}
+            </>
         )
       }
 
-      case 'image':
-        return <ImageElement key={el.id} el={el} commonProps={cp} />
-      default: return null
-    }
-  }
+      return (
+          <div className="relative w-full h-full" style={{ background: '#ffffff', overflow: 'hidden' }}>
+            <Stage
+                ref={stageRef}
+                width={width} height={height}
+                scaleX={stageScale} scaleY={stageScale}
+                x={stagePos.x} y={stagePos.y}
+                onWheel={handleWheel}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                draggable={false}
+                style={{ cursor: isSpacePan ? (isPanning.current ? 'grabbing' : 'grab') : tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair' }}
+            >
+              <Layer>
+                {[...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map(renderElement)}
+                {/* Rubber band selection box */}
+                {selBox && selBox.w > 2 && (
+                    <Rect
+                        x={selBox.x} y={selBox.y} width={selBox.w} height={selBox.h}
+                        fill="rgba(99,102,241,0.08)" stroke="#6366f1" strokeWidth={1 / stageScale}
+                        dash={[4 / stageScale, 2 / stageScale]}
+                        listening={false}
+                    />
+                )}
+                <Transformer
+                    ref={transformerRef}
+                    rotateEnabled={selectedIds.length === 1}
+                    enabledAnchors={selectedIds.length === 1
+                        ? ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']
+                        : []
+                    }
+                    keepRatio={false}
+                    boundBoxFunc={(oldBox, newBox) => (newBox.width < 5 || newBox.height < 5 ? oldBox : newBox)}
+                    ignoreStroke={true}
+                    shouldOverdrawWholeArea={false}
+                />
+              </Layer>
+              {/* Arrow/Line handle-ları — Transformer-dən ayrı Layer-də */}
+              <Layer listening={true}>
+                {renderLineHandles()}
+              </Layer>
+            </Stage>
 
-  const editingEl = editingId ? elements.find((e) => e.id === editingId) : null
-
-  return (
-    <div className="relative w-full h-full" style={{ background: '#ffffff', overflow: 'hidden' }}>
-      <Stage
-        ref={stageRef}
-        width={width} height={height}
-        scaleX={stageScale} scaleY={stageScale}
-        x={stagePos.x} y={stagePos.y}
-        onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        draggable={false}
-        style={{ cursor: isSpacePan ? (isPanning.current ? 'grabbing' : 'grab') : tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair' }}
-      >
-        <Layer>
-          {[...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map(renderElement)}
-          {/* Rubber band selection box */}
-          {selBox && selBox.w > 2 && (
-            <Rect
-              x={selBox.x} y={selBox.y} width={selBox.w} height={selBox.h}
-              fill="rgba(99,102,241,0.08)" stroke="#6366f1" strokeWidth={1 / stageScale}
-              dash={[4 / stageScale, 2 / stageScale]}
-              listening={false}
-            />
-          )}
-          <Transformer
-            ref={transformerRef}
-            rotateEnabled={selectedIds.length === 1}
-            enabledAnchors={selectedIds.length === 1
-              ? ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']
-              : []
-            }
-            keepRatio={false}
-            boundBoxFunc={(oldBox, newBox) => (newBox.width < 5 || newBox.height < 5 ? oldBox : newBox)}
-            ignoreStroke={true}
-            shouldOverdrawWholeArea={false}
-          />
-        </Layer>
-      </Stage>
-
-      {editingId && editingEl && (
-        <RichTextEditor
-          key={editingId}
-          el={editingEl}
-          left={editPos.x}
-          top={editPos.y}
-          scale={editPos.scale}
-          areaW={editPos.areaW}
-          areaH={editPos.areaH}
-          onChange={(runs) => handleRunsChange(editingId, runs)}
-          onFinish={finishEditing}
-        />
-      )}
-    </div>
-  )
-})
+            {editingId && editingEl && (
+                <RichTextEditor
+                    key={editingId}
+                    el={editingEl}
+                    left={editPos.x}
+                    top={editPos.y}
+                    scale={editPos.scale}
+                    areaW={editPos.areaW}
+                    areaH={editPos.areaH}
+                    onChange={(runs) => handleRunsChange(editingId, runs)}
+                    onFinish={finishEditing}
+                />
+            )}
+          </div>
+      )
+    })
 
 export default CanvasBoard
 
