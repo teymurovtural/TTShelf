@@ -21,6 +21,7 @@ type Canvas struct {
 type CanvasElement struct {
 	ID        string          `json:"id"`
 	CanvasID  string          `json:"canvas_id"`
+	PageID    *string         `json:"page_id,omitempty"`
 	Type      string          `json:"type"`
 	Data      json.RawMessage `json:"data" swaggertype:"object"`
 	ZIndex    int             `json:"z_index"`
@@ -37,11 +38,16 @@ type CanvasRepository interface {
 	Delete(ctx context.Context, id, userID string) error
 	SaveExportKey(ctx context.Context, id, userID, exportKey string) error
 
+	// Element metodları — canvas-level (backwards compat)
 	CreateElement(ctx context.Context, canvasID string, req *CreateElementRequest) (*CanvasElement, error)
 	GetElements(ctx context.Context, canvasID, userID string) ([]*CanvasElement, error)
 	UpdateElement(ctx context.Context, id, canvasID string, req *UpdateElementRequest) (*CanvasElement, error)
 	DeleteElement(ctx context.Context, id, canvasID string) error
 	BatchSaveElements(ctx context.Context, canvasID, userID string, elements []*BatchElement) error
+
+	// Element metodları — page-level (yeni)
+	GetElementsByPageID(ctx context.Context, pageID, canvasID, userID string) ([]*CanvasElement, error)
+	BatchSaveElementsByPageID(ctx context.Context, pageID, canvasID, userID string, elements []*BatchElement) error
 }
 
 // Service interface
@@ -53,14 +59,20 @@ type CanvasService interface {
 	Delete(ctx context.Context, id, userID string) error
 	ExportPDF(ctx context.Context, canvasID, userID string, pdfData []byte) (string, error)
 
+	// Element metodları — canvas-level (backwards compat)
 	CreateElement(ctx context.Context, canvasID, userID string, req *CreateElementRequest) (*CanvasElement, error)
 	GetElements(ctx context.Context, canvasID, userID string) ([]*CanvasElement, error)
 	UpdateElement(ctx context.Context, id, canvasID, userID string, req *UpdateElementRequest) (*CanvasElement, error)
 	DeleteElement(ctx context.Context, id, canvasID, userID string) error
 	BatchSaveElements(ctx context.Context, canvasID, userID string, req *BatchSaveRequest) error
+
+	// Element metodları — page-level (yeni)
+	GetElementsByPageID(ctx context.Context, pageID, canvasID, userID string) ([]*CanvasElement, error)
+	BatchSaveElementsByPageID(ctx context.Context, pageID, canvasID, userID string, req *BatchSaveRequest) error
 }
 
-// Request modelleri
+// --- Request modelleri ---
+
 type CreateCanvasRequest struct {
 	Title  string  `json:"title"`
 	BookID *string `json:"book_id,omitempty"`
@@ -73,6 +85,7 @@ type UpdateCanvasTitleRequest struct {
 type ElementData = json.RawMessage
 
 type CreateElementRequest struct {
+	PageID *string     `json:"page_id,omitempty"`
 	Type   string      `json:"type"`
 	Data   ElementData `json:"data" swaggertype:"object"`
 	ZIndex int         `json:"z_index"`
@@ -85,6 +98,7 @@ type UpdateElementRequest struct {
 
 type BatchElement struct {
 	ID     *string     `json:"id,omitempty"`
+	PageID *string     `json:"page_id,omitempty"`
 	Type   string      `json:"type"`
 	Data   ElementData `json:"data" swaggertype:"object"`
 	ZIndex int         `json:"z_index"`
@@ -94,7 +108,8 @@ type BatchSaveRequest struct {
 	Elements []*BatchElement `json:"elements"`
 }
 
-// Response modelleri
+// --- Response modelleri ---
+
 type CanvasListResponse struct {
 	Canvases []*Canvas `json:"canvases"`
 	Total    int       `json:"total"`

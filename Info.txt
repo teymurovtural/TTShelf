@@ -1,0 +1,19 @@
+1. Docker-lə yalnız infra-nı qaldır (postgres, redis, minio):
+
+bash
+cd TTShelf
+docker-compose -f docker-compose.dev.yml up postgres redis minio -d
+
+2. Backend-i ayrıca run et:
+
+bash
+cd backend
+go run ./cmd/server
+
+3. Frontend-i ayrıca run et:
+
+bash
+cd frontend
+npm run dev
+
+Sonra http://localhost:3000

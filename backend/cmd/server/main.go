@@ -56,24 +56,30 @@ func main() {
 
 	m := mailer.New(&cfg.SMTP)
 
+	// Repositories
 	userRepo       := repository.NewUserRepository(db)
 	bookRepo       := repository.NewBookRepository(db)
 	canvasRepo     := repository.NewCanvasRepository(db)
+	pageRepo       := repository.NewPageRepository(db)
 	annotationRepo := repository.NewAnnotationRepository(db)
 	fontRepo       := repository.NewFontRepository(db)
 
+	// Services
 	authSvc       := service.NewAuthService(userRepo, rdb, &cfg.JWT, m)
 	userSvc       := service.NewUserService(userRepo)
 	bookSvc       := service.NewBookService(bookRepo, minioClient)
 	canvasSvc     := service.NewCanvasService(canvasRepo)
+	pageSvc       := service.NewPageService(pageRepo, canvasRepo)
 	annotationSvc := service.NewAnnotationService(annotationRepo, bookRepo)
 	fontSvc       := service.NewFontService(fontRepo, cfg.Minio.PublicURL, cfg.Minio.BucketName)
 
+	// Handlers
 	handlers := &router.Handlers{
 		Auth:       handler.NewAuthHandler(authSvc, &cfg.JWT, &cfg.Server),
 		User:       handler.NewUserHandler(userSvc),
 		Book:       handler.NewBookHandler(bookSvc),
 		Canvas:     handler.NewCanvasHandler(canvasSvc),
+		Page:       handler.NewPageHandler(pageSvc, canvasSvc),
 		Annotation: handler.NewAnnotationHandler(annotationSvc),
 		Upload:     handler.NewUploadHandler(minioClient, cfg.Minio.PublicURL),
 		Font:       handler.NewFontHandler(fontSvc, minioClient),

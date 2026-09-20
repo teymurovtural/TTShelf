@@ -19,6 +19,7 @@ type Handlers struct {
 	User       *handler.UserHandler
 	Book       *handler.BookHandler
 	Canvas     *handler.CanvasHandler
+	Page       *handler.PageHandler
 	Annotation *handler.AnnotationHandler
 	Upload     *handler.UploadHandler
 	Font       *handler.FontHandler
@@ -64,16 +65,16 @@ func New(h *Handlers, jwtSecret, allowedOrigins, env string) http.Handler {
 			})
 
 			r.Route("/books", func(r chi.Router) {
-				r.Get("/",           h.Book.GetAll)
-				r.Post("/",          h.Book.Upload)
-				r.Get("/{id}",       h.Book.GetByID)
-				r.Delete("/{id}",    h.Book.Delete)
-				r.Get("/{id}/file",  h.Book.StreamFile)
+				r.Get("/",              h.Book.GetAll)
+				r.Post("/",             h.Book.Upload)
+				r.Get("/{id}",          h.Book.GetByID)
+				r.Delete("/{id}",       h.Book.Delete)
+				r.Get("/{id}/file",     h.Book.StreamFile)
 				r.Put("/{id}/bookmark", h.Book.UpdateBookmark)
 
-				r.Get("/{id}/annotations",        h.Annotation.GetByBookID)
-				r.Post("/{id}/annotations",        h.Annotation.Create)
-				r.Put("/{id}/annotations/{aid}",   h.Annotation.Update)
+				r.Get("/{id}/annotations",         h.Annotation.GetByBookID)
+				r.Post("/{id}/annotations",         h.Annotation.Create)
+				r.Put("/{id}/annotations/{aid}",    h.Annotation.Update)
 				r.Delete("/{id}/annotations/{aid}", h.Annotation.Delete)
 			})
 
@@ -95,11 +96,23 @@ func New(h *Handlers, jwtSecret, allowedOrigins, env string) http.Handler {
 				r.Put("/{id}",    h.Canvas.UpdateTitle)
 				r.Delete("/{id}", h.Canvas.Delete)
 
-				r.Get("/{id}/elements",         h.Canvas.GetElements)
-				r.Post("/{id}/elements",         h.Canvas.CreateElement)
-				r.Post("/{id}/elements/batch",   h.Canvas.BatchSaveElements)
-				r.Put("/{id}/elements/{eid}",    h.Canvas.UpdateElement)
-				r.Delete("/{id}/elements/{eid}", h.Canvas.DeleteElement)
+				// Canvas-level elements (backwards compat — köhnə frontend üçün qalır)
+				r.Get("/{id}/elements",          h.Canvas.GetElements)
+				r.Post("/{id}/elements",          h.Canvas.CreateElement)
+				r.Post("/{id}/elements/batch",    h.Canvas.BatchSaveElements)
+				r.Put("/{id}/elements/{eid}",     h.Canvas.UpdateElement)
+				r.Delete("/{id}/elements/{eid}",  h.Canvas.DeleteElement)
+
+				// Page-level routes (yeni)
+				r.Get("/{id}/pages",              h.Page.GetPages)
+				r.Post("/{id}/pages",             h.Page.CreatePage)
+				r.Post("/{id}/pages/reorder",     h.Page.ReorderPages)
+				r.Put("/{id}/pages/{pid}",        h.Page.UpdatePage)
+				r.Delete("/{id}/pages/{pid}",     h.Page.DeletePage)
+
+				// Page elements (yeni)
+				r.Get("/{id}/pages/{pid}/elements",       h.Page.GetPageElements)
+				r.Post("/{id}/pages/{pid}/elements/batch", h.Page.BatchSavePageElements)
 
 				r.Post("/{id}/export/pdf", h.Export.ExportPDF)
 			})

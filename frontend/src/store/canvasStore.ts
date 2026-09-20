@@ -1,14 +1,14 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { create } from 'zustand'
 import type { CanvasElement, ElementType, ElementData } from '../types'
 
 interface CanvasState {
     elements: CanvasElement[]
-    selectedId: string | null      // tək seçim (köhnə uyğunluq üçün)
-    selectedIds: string[]          // çoxlu seçim
-    tool: ElementType | 'select' | 'pan'
+    selectedId: string | null
+    selectedIds: string[]
+    tool: ElementType | 'select' | 'pan' | 'eraser'
     isDirty: boolean
 
-    // Actions
     setElements: (elements: CanvasElement[]) => void
     addElement: (element: CanvasElement) => void
     updateElement: (id: string, data: Partial<ElementData>) => void
@@ -17,7 +17,7 @@ interface CanvasState {
     deleteSelected: () => void
     setSelectedId: (id: string | null) => void
     setSelectedIds: (ids: string[]) => void
-    setTool: (tool: ElementType | 'select' | 'pan') => void
+    setTool: (tool: ElementType | 'select' | 'pan' | 'eraser') => void
     setDirty: (dirty: boolean) => void
     groupSelected: () => void
     ungroupSelected: () => void
@@ -27,7 +27,6 @@ interface CanvasState {
     bringToFront: (id: string) => void
     sendToBack: (id: string) => void
 
-    // Undo/Redo
     history: CanvasElement[][]
     historyIndex: number
     pushHistory: () => void
@@ -138,7 +137,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         const idx = els.findIndex((e) => e.id === id)
         if (idx < 0 || idx >= els.length - 1) return
         get().pushHistory()
-        // Swap z_index with next element
         const tmp = els[idx].z_index
         els[idx] = { ...els[idx], z_index: els[idx + 1].z_index }
         els[idx + 1] = { ...els[idx + 1], z_index: tmp }
@@ -182,7 +180,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         get().pushHistory()
 
         const selected = elements.filter((el) => selectedIds.includes(el.id))
-        // Bounding box hesabla
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
         for (const el of selected) {
             const x = el.data.x ?? 0
@@ -202,24 +199,18 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         }
 
         const groupId = crypto.randomUUID()
-        // Hər elementin groupId-sini set et, relative offset saxla
         const updatedElements = elements.map((el) => {
             if (!selectedIds.includes(el.id)) return el
             return { ...el, data: { ...el.data, groupId, _gx: el.data.x, _gy: el.data.y } }
         })
 
-        set({
-            elements: updatedElements,
-            selectedIds: selectedIds,
-            isDirty: true,
-        })
+        set({ elements: updatedElements, selectedIds, isDirty: true })
     },
 
     ungroupSelected: () => {
         const { elements, selectedIds } = get()
         if (selectedIds.length === 0) return
 
-        // Seçilmiş elementlərin groupId-lərini tap
         const groupIds = new Set(
             elements
                 .filter((el) => selectedIds.includes(el.id) && el.data.groupId)
@@ -230,7 +221,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         get().pushHistory()
         const updatedElements = elements.map((el) => {
             if (!el.data.groupId || !groupIds.has(el.data.groupId)) return el
-            const { groupId: _g, _gx: __gx, _gy: __gy, ...restData } = el.data as any
+            // ElementData [key: string]: any olduğundan destructure işləyir
+            const { groupId: _g, _gx: _gx2, _gy: _gy2, ...restData } = el.data
             return { ...el, data: restData }
         })
 

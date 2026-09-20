@@ -5,11 +5,13 @@ import { canvasApi } from '../api/canvas'
 import { booksApi } from '../api/books'
 import { useCanvasStore } from '../store/canvasStore'
 import { useBookStore } from '../store/bookStore'
+import { usePageStore } from '../store/pageStore'
 import { useAutoSave } from '../hooks/useAutoSave'
 import { useKeyboard } from '../hooks/useKeyboard'
 import Toolbar from '../components/canvas/Toolbar'
 import CanvasBoard, { type CanvasBoardHandle } from '../components/canvas/CanvasBoard'
 import LeftPanel from '../components/canvas/LeftPanel'
+import PageSidebar from '../components/canvas/PageSidebar'
 import PDFViewer from '../components/pdf/PDFViewer'
 import type { Canvas } from '../types'
 import jsPDF from 'jspdf'
@@ -21,6 +23,7 @@ export default function Editor() {
 
   const { setElements, isDirty } = useCanvasStore()
   const { setCurrentBook }       = useBookStore()
+  const { loadPages }            = usePageStore()
 
   const [canvas,      setCanvas]      = useState<Canvas | null>(null)
   const [canvasTitle, setCanvasTitle] = useState('')
@@ -39,7 +42,7 @@ export default function Editor() {
 
   // Container ölçüsü — loading, pdfOpen dəyişəndə yenidən qoş
   useEffect(() => {
-    if (loading) return // hələ mount olmayıb
+    if (loading) return
 
     const update = () => {
       if (containerRef.current) {
@@ -50,12 +53,10 @@ export default function Editor() {
       }
     }
 
-    // Bir frame gözlə ki DOM render olunsun
     const raf = requestAnimationFrame(() => {
       update()
       const obs = new ResizeObserver(update)
       if (containerRef.current) obs.observe(containerRef.current)
-      // cleanup üçün saxla
       ;(containerRef as any)._obs = obs
     })
 
@@ -65,19 +66,18 @@ export default function Editor() {
     }
   }, [loading, pdfOpen])
 
-  // Canvas yüklə
+  // Canvas yüklə + page-ləri yüklə
   useEffect(() => {
     if (!canvasId) return
     const load = async () => {
       try {
-        const [canvasRes, elementsRes] = await Promise.all([
-          canvasApi.getById(canvasId),
-          canvasApi.getElements(canvasId),
-        ])
+        const canvasRes = await canvasApi.getById(canvasId)
         const c = canvasRes.data.data
         setCanvas(c)
         setCanvasTitle(c.title)
-        setElements(elementsRes.data.data || [])
+
+        // Page-ləri yüklə (birinci page-in elementlərini də yükləyir)
+        await loadPages(canvasId)
       } catch (err) {
         console.error('Canvas yüklənmədi:', err)
       } finally {
@@ -109,7 +109,7 @@ export default function Editor() {
     }, 1000)
   }
 
-  // PDF export — CanvasBoard-dan dataUrl al, jsPDF ilə PDF yarat
+  // PDF export
   const handleExport = async () => {
     if (!canvasId || !canvasBoardRef.current) return
     try {
@@ -119,12 +119,10 @@ export default function Editor() {
         return
       }
 
-      // Canvas ölçüsünü tap
       const img = new window.Image()
       img.src = dataUrl
       await new Promise<void>((res) => { img.onload = () => res() })
 
-      // pixelRatio:2 ilə çəkilib, real ölçü yarısıdır
       const w = img.width  / 2
       const h = img.height / 2
 
@@ -139,7 +137,6 @@ export default function Editor() {
 
       const blob = pdf.output('blob')
 
-      // Backend-ə göndər (MinIO-ya yüklə, URL al)
       try {
         const res  = await canvasApi.exportPdf(canvasId, blob)
         const url  = res.data.data.url
@@ -149,7 +146,6 @@ export default function Editor() {
         a.target   = '_blank'
         a.click()
       } catch {
-        // Backend xəta versə birbaşa yüklə
         const url = URL.createObjectURL(blob)
         const a   = document.createElement('a')
         a.href     = url
@@ -193,7 +189,11 @@ export default function Editor() {
 
         {/* Main area */}
         <div className="flex flex-1 overflow-hidden">
-          {/* Canvas area — tam genişlik */}
+
+          {/* Page sidebar — sol tərəf */}
+          {canvasId && <PageSidebar canvasId={canvasId} />}
+
+          {/* Canvas area */}
           <div
               ref={containerRef}
               className="flex-1 overflow-hidden relative"
@@ -209,10 +209,9 @@ export default function Editor() {
             <LeftPanel />
           </div>
 
-          {/* PDF panel — drag ilə resize */}
+          {/* PDF panel */}
           {pdfOpen && pdfUrl && (
               <>
-                {/* Divider — drag handle */}
                 <div
                     onMouseDown={(e) => {
                       e.preventDefault()

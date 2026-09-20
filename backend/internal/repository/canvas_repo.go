@@ -17,7 +17,6 @@ func NewCanvasRepository(db *pgxpool.Pool) domain.CanvasRepository {
 	return &canvasRepository{db: db}
 }
 
-// scanCanvas — bütün Scan çağırışları üçün ortaq helper
 func scanCanvas(row interface {
 	Scan(dest ...any) error
 }, canvas *domain.Canvas) error {
@@ -136,14 +135,14 @@ func (r *canvasRepository) SaveExportKey(ctx context.Context, id, userID, export
 
 func (r *canvasRepository) CreateElement(ctx context.Context, canvasID string, req *domain.CreateElementRequest) (*domain.CanvasElement, error) {
 	query := `
-		INSERT INTO canvas_elements (canvas_id, type, data, z_index)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, canvas_id, type, data, z_index, created_at, updated_at
+		INSERT INTO canvas_elements (canvas_id, page_id, type, data, z_index)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, canvas_id, page_id, type, data, z_index, created_at, updated_at
 	`
 
 	el := &domain.CanvasElement{}
-	err := r.db.QueryRow(ctx, query, canvasID, req.Type, req.Data, req.ZIndex).Scan(
-		&el.ID, &el.CanvasID, &el.Type, &el.Data, &el.ZIndex, &el.CreatedAt, &el.UpdatedAt,
+	err := r.db.QueryRow(ctx, query, canvasID, req.PageID, req.Type, req.Data, req.ZIndex).Scan(
+		&el.ID, &el.CanvasID, &el.PageID, &el.Type, &el.Data, &el.ZIndex, &el.CreatedAt, &el.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create element: %w", err)
@@ -152,14 +151,18 @@ func (r *canvasRepository) CreateElement(ctx context.Context, canvasID string, r
 	return el, nil
 }
 
+// GetElements — köhnə canvas_id-li endpoint üçün (backwards compat)
 func (r *canvasRepository) GetElements(ctx context.Context, canvasID, userID string) ([]*domain.CanvasElement, error) {
 	var exists bool
-	if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM canvases WHERE id = $1 AND user_id = $2)`, canvasID, userID).Scan(&exists); err != nil || !exists {
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM canvases WHERE id = $1 AND user_id = $2)`,
+		canvasID, userID,
+	).Scan(&exists); err != nil || !exists {
 		return nil, fmt.Errorf("canvas not found")
 	}
 
 	rows, err := r.db.Query(ctx, `
-		SELECT id, canvas_id, type, data, z_index, created_at, updated_at
+		SELECT id, canvas_id, page_id, type, data, z_index, created_at, updated_at
 		FROM canvas_elements WHERE canvas_id = $1 ORDER BY z_index ASC`, canvasID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get elements: %w", err)
@@ -169,7 +172,37 @@ func (r *canvasRepository) GetElements(ctx context.Context, canvasID, userID str
 	var elements []*domain.CanvasElement
 	for rows.Next() {
 		el := &domain.CanvasElement{}
-		if err := rows.Scan(&el.ID, &el.CanvasID, &el.Type, &el.Data, &el.ZIndex, &el.CreatedAt, &el.UpdatedAt); err != nil {
+		if err := rows.Scan(&el.ID, &el.CanvasID, &el.PageID, &el.Type, &el.Data, &el.ZIndex, &el.CreatedAt, &el.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan element: %w", err)
+		}
+		elements = append(elements, el)
+	}
+
+	return elements, nil
+}
+
+// GetElementsByPageID — yeni page-based endpoint üçün
+func (r *canvasRepository) GetElementsByPageID(ctx context.Context, pageID, canvasID, userID string) ([]*domain.CanvasElement, error) {
+	var exists bool
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM canvases WHERE id = $1 AND user_id = $2)`,
+		canvasID, userID,
+	).Scan(&exists); err != nil || !exists {
+		return nil, fmt.Errorf("canvas not found")
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT id, canvas_id, page_id, type, data, z_index, created_at, updated_at
+		FROM canvas_elements WHERE page_id = $1 ORDER BY z_index ASC`, pageID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get elements by page: %w", err)
+	}
+	defer rows.Close()
+
+	var elements []*domain.CanvasElement
+	for rows.Next() {
+		el := &domain.CanvasElement{}
+		if err := rows.Scan(&el.ID, &el.CanvasID, &el.PageID, &el.Type, &el.Data, &el.ZIndex, &el.CreatedAt, &el.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan element: %w", err)
 		}
 		elements = append(elements, el)
@@ -182,12 +215,12 @@ func (r *canvasRepository) UpdateElement(ctx context.Context, id, canvasID strin
 	query := `
 		UPDATE canvas_elements SET data = $1, z_index = $2, updated_at = NOW()
 		WHERE id = $3 AND canvas_id = $4
-		RETURNING id, canvas_id, type, data, z_index, created_at, updated_at
+		RETURNING id, canvas_id, page_id, type, data, z_index, created_at, updated_at
 	`
 
 	el := &domain.CanvasElement{}
 	err := r.db.QueryRow(ctx, query, req.Data, req.ZIndex, id, canvasID).Scan(
-		&el.ID, &el.CanvasID, &el.Type, &el.Data, &el.ZIndex, &el.CreatedAt, &el.UpdatedAt,
+		&el.ID, &el.CanvasID, &el.PageID, &el.Type, &el.Data, &el.ZIndex, &el.CreatedAt, &el.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update element: %w", err)
@@ -207,9 +240,13 @@ func (r *canvasRepository) DeleteElement(ctx context.Context, id, canvasID strin
 	return nil
 }
 
+// BatchSaveElements — köhnə canvas-level batch (backwards compat)
 func (r *canvasRepository) BatchSaveElements(ctx context.Context, canvasID, userID string, elements []*domain.BatchElement) error {
 	var exists bool
-	if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM canvases WHERE id = $1 AND user_id = $2)`, canvasID, userID).Scan(&exists); err != nil || !exists {
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM canvases WHERE id = $1 AND user_id = $2)`,
+		canvasID, userID,
+	).Scan(&exists); err != nil || !exists {
 		return fmt.Errorf("canvas not found")
 	}
 
@@ -229,8 +266,8 @@ func (r *canvasRepository) BatchSaveElements(ctx context.Context, canvasID, user
 			return fmt.Errorf("failed to marshal element data: %w", err)
 		}
 		if _, err = tx.Exec(ctx,
-			`INSERT INTO canvas_elements (canvas_id, type, data, z_index) VALUES ($1, $2, $3, $4)`,
-			canvasID, el.Type, data, el.ZIndex,
+			`INSERT INTO canvas_elements (canvas_id, page_id, type, data, z_index) VALUES ($1, $2, $3, $4, $5)`,
+			canvasID, el.PageID, el.Type, data, el.ZIndex,
 		); err != nil {
 			return fmt.Errorf("failed to insert element: %w", err)
 		}
@@ -238,6 +275,46 @@ func (r *canvasRepository) BatchSaveElements(ctx context.Context, canvasID, user
 
 	if _, err := tx.Exec(ctx, `UPDATE canvases SET updated_at = NOW() WHERE id = $1`, canvasID); err != nil {
 		return fmt.Errorf("failed to update canvas: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// BatchSaveElementsByPageID — yeni page-level batch (auto-save üçün)
+func (r *canvasRepository) BatchSaveElementsByPageID(ctx context.Context, pageID, canvasID, userID string, elements []*domain.BatchElement) error {
+	var exists bool
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM canvases WHERE id = $1 AND user_id = $2)`,
+		canvasID, userID,
+	).Scan(&exists); err != nil || !exists {
+		return fmt.Errorf("canvas not found")
+	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM canvas_elements WHERE page_id = $1`, pageID); err != nil {
+		return fmt.Errorf("failed to delete old page elements: %w", err)
+	}
+
+	for _, el := range elements {
+		data, err := json.Marshal(el.Data)
+		if err != nil {
+			return fmt.Errorf("failed to marshal element data: %w", err)
+		}
+		if _, err = tx.Exec(ctx,
+			`INSERT INTO canvas_elements (canvas_id, page_id, type, data, z_index) VALUES ($1, $2, $3, $4, $5)`,
+			canvasID, pageID, el.Type, data, el.ZIndex,
+		); err != nil {
+			return fmt.Errorf("failed to insert element: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE canvases SET updated_at = NOW() WHERE id = $1`, canvasID); err != nil {
+		return fmt.Errorf("failed to update canvas timestamp: %w", err)
 	}
 
 	return tx.Commit(ctx)

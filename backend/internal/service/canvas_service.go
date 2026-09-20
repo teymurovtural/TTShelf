@@ -68,7 +68,6 @@ func (s *canvasService) Delete(ctx context.Context, id, userID string) error {
 }
 
 func (s *canvasService) CreateElement(ctx context.Context, canvasID, userID string, req *domain.CreateElementRequest) (*domain.CanvasElement, error) {
-	// Canvas user-ə məxsusdurmu yoxla
 	if _, err := s.canvasRepo.GetByID(ctx, canvasID, userID); err != nil {
 		return nil, apperror.New("CANVAS_NOT_FOUND", "Canvas tapılmadı", 404)
 	}
@@ -90,7 +89,6 @@ func (s *canvasService) GetElements(ctx context.Context, canvasID, userID string
 }
 
 func (s *canvasService) UpdateElement(ctx context.Context, id, canvasID, userID string, req *domain.UpdateElementRequest) (*domain.CanvasElement, error) {
-	// Canvas user-ə məxsusdurmu yoxla
 	if _, err := s.canvasRepo.GetByID(ctx, canvasID, userID); err != nil {
 		return nil, apperror.New("CANVAS_NOT_FOUND", "Canvas tapılmadı", 404)
 	}
@@ -104,7 +102,6 @@ func (s *canvasService) UpdateElement(ctx context.Context, id, canvasID, userID 
 }
 
 func (s *canvasService) DeleteElement(ctx context.Context, id, canvasID, userID string) error {
-	// Canvas user-ə məxsusdurmu yoxla
 	if _, err := s.canvasRepo.GetByID(ctx, canvasID, userID); err != nil {
 		return apperror.New("CANVAS_NOT_FOUND", "Canvas tapılmadı", 404)
 	}
@@ -123,8 +120,24 @@ func (s *canvasService) BatchSaveElements(ctx context.Context, canvasID, userID 
 	return nil
 }
 
+// GetElementsByPageID — yeni page-level elements
+func (s *canvasService) GetElementsByPageID(ctx context.Context, pageID, canvasID, userID string) ([]*domain.CanvasElement, error) {
+	elements, err := s.canvasRepo.GetElementsByPageID(ctx, pageID, canvasID, userID)
+	if err != nil {
+		return nil, apperror.New("CANVAS_NOT_FOUND", "Canvas tapılmadı", 404)
+	}
+	return elements, nil
+}
+
+// BatchSaveElementsByPageID — yeni page-level batch save (auto-save üçün)
+func (s *canvasService) BatchSaveElementsByPageID(ctx context.Context, pageID, canvasID, userID string, req *domain.BatchSaveRequest) error {
+	if err := s.canvasRepo.BatchSaveElementsByPageID(ctx, pageID, canvasID, userID, req.Elements); err != nil {
+		return apperror.New("CANVAS_NOT_FOUND", "Canvas tapılmadı", 404)
+	}
+	return nil
+}
+
 func (s *canvasService) ExportPDF(ctx context.Context, canvasID, userID string, pdfData []byte) (string, error) {
-	// Canvas user-ə məxsusdurmu yoxla
 	if _, err := s.canvasRepo.GetByID(ctx, canvasID, userID); err != nil {
 		return "", apperror.New("CANVAS_NOT_FOUND", "Canvas tapılmadı", 404)
 	}

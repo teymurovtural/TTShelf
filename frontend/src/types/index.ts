@@ -65,6 +65,33 @@ export interface CanvasListResponse {
     offset: number
 }
 
+// ---- Canvas Page ----
+export interface CanvasPage {
+    id: string
+    canvas_id: string
+    page_number: number
+    title: string
+    orientation: 'portrait' | 'landscape'
+    locked: boolean
+    created_at: string
+    updated_at: string
+}
+
+export interface CreatePageRequest {
+    title?: string
+    orientation?: 'portrait' | 'landscape'
+}
+
+export interface UpdatePageRequest {
+    title?: string
+    orientation?: 'portrait' | 'landscape'
+    locked?: boolean
+}
+
+export interface ReorderPagesRequest {
+    page_ids: string[]
+}
+
 // ---- Canvas Elements ----
 export type ElementType =
     | 'rect'
@@ -132,6 +159,7 @@ export interface ElementData {
 export interface CanvasElement {
     id: string
     canvas_id: string
+    page_id?: string      // ← YENİ: page-ə bağlı element
     type: ElementType
     data: ElementData
     z_index: number
@@ -141,6 +169,7 @@ export interface CanvasElement {
 
 export interface BatchElement {
     id?: string
+    page_id?: string      // ← YENİ
     type: ElementType
     data: ElementData
     z_index: number

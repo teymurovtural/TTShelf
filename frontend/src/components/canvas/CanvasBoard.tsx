@@ -1,10 +1,11 @@
-import { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 'react'
+import { useRef, useState, useEffect, useLayoutEffect, useCallback, startTransition, forwardRef, useImperativeHandle } from 'react'
 import Konva from 'konva'
 import {
   Stage, Layer, Rect, Arrow, Image as KonvaImage,
-  Line, Transformer, RegularPolygon, Star as KonvaStar, Ellipse, Group, Path,
+  Line, Transformer, Ellipse, Group, Path,
 } from 'react-konva'
 import { useCanvasStore } from '../../store/canvasStore'
+import { usePageStore } from '../../store/pageStore'
 import { uploadApi } from '../../api/upload'
 import type { CanvasElement, ElementData, TextRun } from '../../types'
 import { v4 as uuidv4 } from 'uuid'
@@ -23,23 +24,6 @@ function seededRand(seed: number) {
   }
 }
 
-function applySloppiness(points: number[], sloppiness: number, id: string): number[] {
-  if (!sloppiness || sloppiness === 0 || points.length < 4) return points
-  const amplitude = sloppiness === 1 ? 5 : sloppiness === 2 ? 12 : 0
-  if (amplitude === 0) return points
-  const seed = id.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
-  const rand = seededRand(seed)
-  const result = [...points]
-  const count = points.length / 2 // nöqtə sayı
-  for (let i = 0; i < points.length; i += 2) {
-    const ptIdx = i / 2
-    // Uç nöqtələrə (ilk və son) çox az, ortadasına çox offset ver
-    const edgeFactor = (ptIdx === 0 || ptIdx === count - 1) ? 0.15 : 1.0
-    result[i]   = points[i]   + (rand() - 0.5) * amplitude * 2 * edgeFactor
-    result[i+1] = points[i+1] + (rand() - 0.5) * amplitude * 2 * edgeFactor
-  }
-  return result
-}
 
 function applySloppinessPath(pathData: string, sloppiness: number, id: string): string {
   if (!sloppiness || sloppiness === 0) return pathData
@@ -47,8 +31,7 @@ function applySloppinessPath(pathData: string, sloppiness: number, id: string): 
   const seed = id.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
   const rand = seededRand(seed)
   // Yalnız koordinat rəqəmlərini jitter et
-  return pathData.replace(/(-?\d+\.?\d*)/g, (match, _, offset) => {
-    // Path komanda hərflərindən sonrakı rəqəmlər — M, L, Q, Z əmrləri deyil
+  return pathData.replace(/(-?\d+\.?\d*)/g, (match) => {
     const f = parseFloat(match)
     if (isNaN(f)) return match
     return String(f + (rand() - 0.5) * amplitude * 2)
@@ -78,26 +61,132 @@ function roundedPolygonPath(points: number[][], radius: number): string {
   return path + 'Z'
 }
 
-function regularPolygonPoints(sides: number, radius: number, cx: number, cy: number): number[][] {
-  const pts: number[][] = []
-  for (let i = 0; i < sides; i++) {
-    const angle = (Math.PI * 2 * i / sides) - Math.PI/2
-    pts.push([cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)])
-  }
-  return pts
-}
-
-function starPoints(numPoints: number, outerR: number, innerR: number, cx: number, cy: number): number[][] {
-  const pts: number[][] = []
-  for (let i = 0; i < numPoints * 2; i++) {
-    const angle = (Math.PI * i / numPoints) - Math.PI/2
-    const r = i % 2 === 0 ? outerR : innerR
-    pts.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)])
-  }
-  return pts
-}
 // ---- End helpers ----
 
+// ElementData-nın canvas-a məxsus genişləndirilmiş tipi
+type ExtendedData = {
+  sloppiness?: number
+  cornerRadius?: number | number[]
+  [key: string]: unknown
+}
+
+// cornerRadius-u path funksiyaları üçün number-ə normalize et
+function normCr(cr: number | number[] | undefined): number {
+  if (Array.isArray(cr)) return typeof cr[0] === 'number' ? cr[0] : 0
+  return cr ?? 0
+}
+
+// Komponent xaricindəki tip və helper-lər
+type ShapeProps = {
+  id: string
+  draggable: boolean
+  opacity: number
+  onClick: (e: Konva.KonvaEventObject<MouseEvent>) => void
+  onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => void
+  onDragStart: () => void
+  onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => void
+  onTransformEnd: (e: Konva.KonvaEventObject<Event>) => void
+}
+
+// Rect/Circle üçün ortaq prop helper
+type RectLikeData = { fill?: string; stroke?: string; strokeWidth?: number; width?: number; height?: number; rotation?: number; dash?: number[] }
+function sharedRectProps(d: RectLikeData) {
+  return {
+    offsetX:     d.width  && d.width  < 0 ? Math.abs(d.width)  : 0,
+    offsetY:     d.height && d.height < 0 ? Math.abs(d.height) : 0,
+    fill:        d.fill   === 'transparent' ? undefined : d.fill,
+    stroke:      d.stroke === 'transparent' ? undefined : d.stroke,
+    strokeWidth: d.strokeWidth,
+    rotation:    d.rotation,
+    dash:        d.dash,
+  }
+}
+
+// Path shape-lər üçün ortaq hit area — AABB rect (toxunma dəqiqliyi üçün)
+function makeRectHitFunc(w: number, h: number) {
+  return (ctx: Konva.Context, shape: Konva.Shape) => {
+    ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
+    ctx.fillStrokeShape(shape)
+  }
+}
+
+// Sloppiness üçün ortaq helper — line və arrow hər ikisi istifadə edir
+function buildSloppyPts(
+    x0: number, y0: number, x1: number, y1: number,
+    slop: number, elId: string
+): number[] {
+  const dx = x1-x0, dy = y1-y0
+  const dist = Math.hypot(dx, dy) || 1
+  const px = -dy/dist, py = dx/dist
+  const len = dist
+  const seed = elId.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+  const rnd = seededRand(seed)
+
+  if (slop === 1) {
+    const amp = len * 0.18
+    const sign = rnd() > 0.5 ? 1 : -1
+    return [
+      x0, y0,
+      x0 + dx*0.25 + px*amp*sign,  y0 + dy*0.25 + py*amp*sign,
+      x0 + dx*0.75 + px*amp*(-sign), y0 + dy*0.75 + py*amp*(-sign),
+      x1, y1,
+    ]
+  }
+  // slop === 2
+  const amp = len * 0.28
+  const sign = rnd() > 0.5 ? 1 : -1
+  return [
+    x0, y0,
+    x0 + dx*0.2  + px*amp*sign,       y0 + dy*0.2  + py*amp*sign,
+    x0 + dx*0.45 + px*amp*(-sign)*0.7, y0 + dy*0.45 + py*amp*(-sign)*0.7,
+    x0 + dx*0.65 + px*amp*sign*0.8,   y0 + dy*0.65 + py*amp*sign*0.8,
+    x0 + dx*0.85 + px*amp*(-sign)*0.5, y0 + dy*0.85 + py*amp*(-sign)*0.5,
+    x1, y1,
+  ]
+}
+
+
+// Element bounding box — komponent xaricindədir, eraseAtPoint və handleDragEnd istifadə edir
+function getElBBox(el: CanvasElement) {
+  const d = el.data
+  if (el.type === 'text') {
+    const b = textBox(el)
+    return { x: d.x ?? 0, y: d.y ?? 0, w: b.width, h: b.height }
+  }
+  const isCentered = ['triangle','pentagon','hexagon','star'].includes(el.type)
+  if (d.points && d.points.length >= 2) {
+    const pts = d.points
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (let i = 0; i < pts.length - 1; i += 2) {
+      minX = Math.min(minX, pts[i]);   maxX = Math.max(maxX, pts[i])
+      minY = Math.min(minY, pts[i+1]); maxY = Math.max(maxY, pts[i+1])
+    }
+    const pad = el.type === 'freehand'
+        ? (d.strokeWidth as number ?? 2) / 2 + 8
+        : (d.strokeWidth as number ?? 2) / 2 + 20
+    return { x: minX - pad, y: minY - pad, w: Math.max(maxX - minX, pad * 2), h: Math.max(maxY - minY, pad * 2) }
+  }
+  if (isCentered) {
+    const r = Math.abs(d.width ?? 0) / 2
+    return { x: (d.x ?? 0) - r, y: (d.y ?? 0) - r, w: r * 2, h: r * 2 }
+  }
+  if (el.type === 'cylinder') {
+    return { x: d.x ?? 0, y: d.y ?? 0, w: Math.abs(d.width ?? 0), h: Math.abs(d.height ?? 0) }
+  }
+  return { x: d.x ?? 0, y: d.y ?? 0, w: Math.abs(d.width ?? 0), h: Math.abs(d.height ?? 0) }
+}
+
+// Arrow/Line üçün əyri yoxlama helper
+function checkBend(pts: number[]): boolean {
+  if (pts.length < 6) return false
+  const mx = (pts[0] + pts[4]) / 2
+  const my = (pts[1] + pts[5]) / 2
+  return Math.abs(pts[2] - mx) > 5 || Math.abs(pts[3] - my) > 5
+}
+
+// A4 ölçüləri @ 96 dpi
+const A4_W_PT = 794
+const A4_H_PT = 1123
 
 interface CanvasBoardProps { width: number; height: number }
 export interface CanvasBoardHandle { exportImage: () => string | null }
@@ -123,13 +212,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
     function CanvasBoard({ width, height }, ref) {
 
       const {
-        elements, tool, selectedId, selectedIds,
+        elements, tool, selectedIds,
         addElement, updateElement, deleteSelected, deleteElement,
-        setSelectedId, setSelectedIds, setTool, pushHistory,
+        setSelectedIds, setTool, pushHistory,
       } = useCanvasStore()
+
+      // Aktiv page-in orientasiyasına görə A4 ölçüsü
+      const { pages, activePageId } = usePageStore()
+      const activePage = pages.find(p => p.id === activePageId)
+      const isLandscape = activePage?.orientation === 'landscape'
+      const A4_W = isLandscape ? A4_H_PT : A4_W_PT
+      const A4_H = isLandscape ? A4_W_PT : A4_H_PT
 
       const stageRef       = useRef<Konva.Stage>(null)
       const transformerRef = useRef<Konva.Transformer>(null)
+      const onTransformerMount = useCallback((node: Konva.Transformer | null) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(transformerRef as any).current = node
+      }, [])
       const isDrawing      = useRef(false)
       const drawingId      = useRef<string | null>(null)
       const stagePosRef    = useRef({ x: 0, y: 0 })
@@ -146,30 +246,60 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
       const [stagePos,   setStagePos]   = useState({ x: 0, y: 0 })
       const [stageScale, setStageScale] = useState(1)
+
+      // A4-ü ekrana fit et — ilk yükləmədə və orientation dəyişəndə
+      const fitA4ToScreen = useCallback((a4W: number, a4H: number) => {
+        const padding = 32
+        const scaleX = (width  - padding * 2) / a4W
+        const scaleY = (height - padding * 2) / a4H
+        const scale  = Math.min(scaleX, scaleY)
+        const x = (width  - a4W * scale) / 2
+        const y = (height - a4H * scale) / 2
+        stagePosRef.current   = { x, y }
+        stageScaleRef.current = scale
+        startTransition(() => {
+          setStageScale(scale)
+          setStagePos({ x, y })
+        })
+      }, [width, height])
       const [editingId,  setEditingId]  = useState<string | null>(null)
       const [editPos,    setEditPos]    = useState({ x: 0, y: 0, scale: 1, areaW: undefined as number|undefined, areaH: undefined as number|undefined })
-      const [isSpacePan, setIsSpacePan] = useState(false)
+      const [isSpacePan,  setIsSpacePan]  = useState(false)
+      const [isDragging,  setIsDragging]  = useState(false)
 
       // Rubber band selection state
       const [selBox, setSelBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
       const selBoxRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
       const selStart  = useRef<{ x: number; y: number } | null>(null)
 
-      // Arrow/Line orta nöqtə drag
-      const midDragId  = useRef<string | null>(null)
-      const [midDragActive, setMidDragActive] = useState(false)
+      // Eraser
+      const ERASER_RADIUS = 20  // canvas koordinatında px
+      const isEraserDown  = useRef(false)
+      const [eraserPos, setEraserPos] = useState<{ x: number; y: number } | null>(null)
 
       useEffect(() => { stagePosRef.current = stagePos },   [stagePos])
       useEffect(() => { stageScaleRef.current = stageScale }, [stageScale])
       useEffect(() => { elementsRef.current = elements },     [elements])
 
-      // Export
+      // İlk yükləmə + orientation dəyişikliyi + container ölçüsü dəyişikliyi
+      useLayoutEffect(() => {
+        if (width > 0 && height > 0) fitA4ToScreen(A4_W, A4_H)
+      }, [A4_W, A4_H, width, height, fitA4ToScreen])
+
+      // Export — yalnız A4 sahəsini çıxar
       useImperativeHandle(ref, () => ({
         exportImage: () => {
           if (!stageRef.current) return null
           const tr = transformerRef.current
           tr?.hide(); stageRef.current.batchDraw()
-          const dataUrl = stageRef.current.toDataURL({ pixelRatio: 2, mimeType: 'image/png' })
+          const dataUrl = stageRef.current.toDataURL({
+            pixelRatio: 2,
+            mimeType: 'image/png',
+            x: 0,
+            y: 0,
+            width:  A4_W,
+            height: A4_H,
+          })
           tr?.show(); stageRef.current.batchDraw()
           return dataUrl
         },
@@ -233,6 +363,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         const onMouseDown = (e: MouseEvent) => {
           if (isSpaceDown.current && e.button === 0) {
             isPanning.current  = true
+            setIsDragging(true)
             lastPanPos.current = { x: e.clientX, y: e.clientY }
           }
         }
@@ -245,7 +376,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           stagePosRef.current = newPos
           setStagePos({ ...newPos })
         }
-        const onMouseUp = () => { isPanning.current = false }
+        const onMouseUp = () => { isPanning.current = false; setIsDragging(false) }
 
         window.addEventListener('keydown',   onKeyDown)
         window.addEventListener('keyup',     onKeyUp)
@@ -307,7 +438,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       }, [editingId, elements.length, addElement])
 
       // Zoom
-      const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
+      const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
         e.evt.preventDefault()
         const stage = stageRef.current
         if (!stage) return
@@ -322,9 +453,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         }
         setStageScale(newScale)
         setStagePos(newPos)
-      }
+      }, [])
 
-      const getPointerOnStage = () => {
+      const getPointerOnStage = useCallback(() => {
         const stage = stageRef.current
         if (!stage) return { x: 0, y: 0 }
         const pos = stage.getPointerPosition()
@@ -333,13 +464,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           x: (pos.x - stagePosRef.current.x) / stageScaleRef.current,
           y: (pos.y - stagePosRef.current.y) / stageScaleRef.current,
         }
-      }
+      }, [])
 
       // ── Mətn redaktəsi (rich text) ──
       // Redaktə overlay-nin ekran mövqeyini/miqyasını hesablayır — həm redaktəyə
       // başlayanda, həm də redaktə zamanı pan/zoom baş verəndə çağırılır ki,
       // üzən qutu canvas-dakı fiqurdan "ayrılmasın".
-      const computeEditPos = (elId: string) => {
+      const computeEditPos = useCallback((elId: string) => {
         const el = elementsRef.current.find((e) => e.id === elId)
         if (!el || el.type !== 'text') return null
         const stage = stageRef.current
@@ -358,30 +489,29 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           areaW: area ? box.width  * sc : undefined,
           areaH: area ? box.height * sc : undefined,
         }
-      }
+      }, [])
 
-      const startEditing = (elId: string) => {
+      const startEditing = useCallback((elId: string) => {
         const pos = computeEditPos(elId)
         if (!pos) return
         setEditingId(elId)
         setEditPos(pos)
         transformerRef.current?.hide()
         transformerRef.current?.getLayer()?.batchDraw()
-      }
+      }, [computeEditPos])
 
       // Redaktə açıqkən stage pan/zoom olanda overlay-i canlı sinxronlaşdır
       useEffect(() => {
         if (!editingId) return
         const pos = computeEditPos(editingId)
-        if (pos) setEditPos(pos)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [editingId, stagePos, stageScale])
+        if (pos) startTransition(() => setEditPos(pos))
+      }, [editingId, stagePos, stageScale, computeEditPos])
 
       const handleRunsChange = (id: string, runs: TextRun[]) => {
         updateElement(id, { runs, text: runsToPlainText(runs) })
       }
 
-      const finishEditing = () => {
+      const finishEditing = useCallback(() => {
         if (!editingId) return
         const id = editingId
         setEditingId(null)
@@ -389,30 +519,51 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         transformerRef.current?.getLayer()?.batchDraw()
 
         const el = elementsRef.current.find((e) => e.id === id)
-        // Tamamilə boş qalan mətn elementi canvas-da qalmasın
         if (el && !runsToPlainText(getRuns(el.data)).trim()) {
           deleteElement(id)
           return
         }
         pushHistory()
         setSelectedIds([id])
-      }
+      }, [editingId, deleteElement, pushHistory, setSelectedIds])
+
+      // Eraser — kursora toxunan elementləri tap və sil
+      const eraseAtPoint = useCallback((px: number, py: number) => {
+        const toDelete = elementsRef.current.filter((el) => {
+          const bb = getElBBox(el)
+          const nearX = Math.max(bb.x, Math.min(px, bb.x + bb.w))
+          const nearY = Math.max(bb.y, Math.min(py, bb.y + bb.h))
+          const dist  = Math.hypot(px - nearX, py - nearY)
+          return dist <= ERASER_RADIUS
+        })
+        toDelete.forEach((el) => deleteElement(el.id))
+      }, [deleteElement])
 
       const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
         if (isSpaceDown.current) return
         if (editingId) { finishEditing(); return }
 
+        // Eraser
+        if (tool === 'eraser') {
+          isEraserDown.current = true
+          const pos = getPointerOnStage()
+          setEraserPos(pos)
+          eraseAtPoint(pos.x, pos.y)
+          return
+        }
+
         // Pan aləti — stage-i birbaşa sürüşdür
         if (tool === 'pan') {
           isPanning.current  = true
+          setIsDragging(true)
           lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY }
           return
         }
 
         // Text aləti aktiv olanda mövcud text elementinə klikləndikdə — düzəliş et
-        if (tool === 'text' && e.target !== stageRef.current && e.target.getType() !== 'Stage') {
+        if (tool === 'text' && e.target.getType() !== 'Stage') {
           const clickedId = e.target.id() || e.target.getParent()?.id()
-          const clickedEl = clickedId ? elementsRef.current.find((el) => el.id === clickedId) : null
+          const clickedEl = clickedId ? elements.find((el) => el.id === clickedId) : null
           if (clickedEl && clickedEl.type === 'text') {
             e.cancelBubble = true
             setTool('select')
@@ -425,7 +576,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
 
         const pos      = getPointerOnStage()
-        const isStage = e.target === stageRef.current || e.target.getType() === 'Stage'
+        const isStage = e.target.getType() === 'Stage'
 
         if (tool === 'select') {
           if (isStage) {
@@ -449,11 +600,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         } else if (tool === 'circle') {
           data = { x: pos.x, y: pos.y, width: 0, height: 0, ...SHAPE_DEFAULTS.circle }
         } else if (['triangle','pentagon','hexagon','star'].includes(tool)) {
-          const defaults = (SHAPE_DEFAULTS as any)[tool] ?? SHAPE_DEFAULTS.rect
+          const defaults = ((SHAPE_DEFAULTS as unknown) as Record<string, Partial<typeof SHAPE_DEFAULTS.rect>>)[tool] ?? SHAPE_DEFAULTS.rect
           // Mərkəz koordinat sistemi — x/y mərkəzdir
           data = { x: pos.x, y: pos.y, width: 0, height: 0, ...defaults }
         } else if (['diamond','parallelogram','cross','cylinder'].includes(tool)) {
-          const defaults = (SHAPE_DEFAULTS as any)[tool] ?? SHAPE_DEFAULTS.rect
+          const defaults = ((SHAPE_DEFAULTS as unknown) as Record<string, Partial<typeof SHAPE_DEFAULTS.rect>>)[tool] ?? SHAPE_DEFAULTS.rect
           data = { x: pos.x, y: pos.y, width: 0, height: 0, ...defaults }
         } else if (tool === 'line') {
           // 3 nöqtə: [x0,y0, mx,my, x1,y1] — orta nöqtə sürüklənərək əyilir
@@ -492,6 +643,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
         const pos = getPointerOnStage()
 
+        // Eraser mousemove
+        if (tool === 'eraser') {
+          setEraserPos(pos)
+          if (isEraserDown.current) eraseAtPoint(pos.x, pos.y)
+          return
+        }
+
         // Rubber band — yalnız select alətində
         if (selStart.current) {
           const sx = selStart.current.x
@@ -525,7 +683,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           updateElement(drawingId.current, { width: w, height: h })
         } else if (['triangle','pentagon','hexagon','star'].includes(tool)) {
           // Mərkəzdən radius kimi çək — x/y sabit qalır (başlanğıc = mərkəz)
-          let radius = Math.max(Math.abs(pos.x - (el.data.x || 0)), Math.abs(pos.y - (el.data.y || 0)))
+          const radius = Math.max(Math.abs(pos.x - (el.data.x || 0)), Math.abs(pos.y - (el.data.y || 0)))
           if (isShiftDown.current) {
             // Shift: simmetrik
           }
@@ -551,8 +709,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         }
       }
 
+      const handleMouseLeave = useCallback(() => {
+        isEraserDown.current = false
+        setEraserPos(null)
+      }, [])
+
       const handleMouseUp = () => {
-        if (tool === 'pan') { isPanning.current = false; return }
+        if (tool === 'eraser') {
+          isEraserDown.current = false
+          if (elementsRef.current.length !== elements.length) pushHistory()
+          return
+        }
+        if (tool === 'pan') { isPanning.current = false; setIsDragging(false); return }
         // Rubber band bitdi — içindəki elementləri seç
         if (selStart.current) {
           const currentBox = selBoxRef.current
@@ -615,10 +783,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       }
 
       // Element drag — tək və ya group
-      const handleDragStart = (id: string) => {
+      const handleDragStart = useCallback((id: string) => {
         if (selectedIds.length > 1 && selectedIds.includes(id)) {
           isDraggingGroup.current = true
-          // Hər elementin başlanğıc mövqeyini saxla
           const positions: Record<string, { x: number; y: number }> = {}
           elements.forEach((el) => {
             if (selectedIds.includes(el.id)) {
@@ -627,49 +794,12 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           })
           dragStartPositions.current = positions
         }
-      }
+      }, [selectedIds, elements])
 
 
       // Element bounding box — sol yuxarı künc + ölçü
-      const getElBBox = (el: CanvasElement) => {
-        const d = el.data
-        if (el.type === 'text') {
-          const b = textBox(el)
-          return { x: d.x ?? 0, y: d.y ?? 0, w: b.width, h: b.height }
-        }
-        const isCentered = ['triangle','pentagon','hexagon','star'].includes(el.type)
-        if (d.points && d.points.length >= 2) {
-          const pts = d.points
-          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-          for (let i = 0; i < pts.length - 1; i += 2) {
-            minX = Math.min(minX, pts[i]);   maxX = Math.max(maxX, pts[i])
-            minY = Math.min(minY, pts[i+1]); maxY = Math.max(maxY, pts[i+1])
-          }
-          // Line/arrow/freehand üçün böyük pad — nazik xətlər seçilə bilsin
-          // Freehand üçün daha az pad (çoxlu nöqtəsi var, bbox düzgündür)
-          const pad = el.type === 'freehand'
-              ? (d.strokeWidth as number ?? 2) / 2 + 8
-              : (d.strokeWidth as number ?? 2) / 2 + 20
-          return { x: minX - pad, y: minY - pad, w: Math.max(maxX - minX, pad * 2), h: Math.max(maxY - minY, pad * 2) }
-        }
-        if (isCentered) {
-          const r = Math.abs(d.width ?? 0) / 2
-          return { x: (d.x ?? 0) - r, y: (d.y ?? 0) - r, w: r * 2, h: r * 2 }
-        }
-        // Cylinder — d.x/d.y sol-üst künc, offset yoxdur
-        if (el.type === 'cylinder') {
-          return { x: d.x ?? 0, y: d.y ?? 0, w: Math.abs(d.width ?? 0), h: Math.abs(d.height ?? 0) }
-        }
-        // Shape-lər — pad yoxdur, dəqiq bbox
-        return {
-          x: d.x ?? 0, y: d.y ?? 0,
-          w: Math.abs(d.width ?? 0), h: Math.abs(d.height ?? 0)
-        }
-      }
-
-      const handleDragEnd = (id: string, e: Konva.KonvaEventObject<DragEvent>) => {
+      const handleDragEnd = useCallback((id: string, e: Konva.KonvaEventObject<DragEvent>) => {
         pushHistory()
-        const el = elementsRef.current.find((el) => el.id === id)
         if (isDraggingGroup.current && selectedIds.length > 1 && selectedIds.includes(id)) {
           const newX = e.target.x()
           const newY = e.target.y()
@@ -698,11 +828,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
             updateElement(id, { x: e.target.x(), y: e.target.y() })
           }
         }
-      }
+      }, [selectedIds, pushHistory, updateElement])
 
       // Verilmiş enə görə mətnin daxildə tutduğu real hündürlük — qutu bundan aşağı kiçilməsin
       const minTextAreaHeight = (el: CanvasElement, boxWidth: number) => {
-        const d = el.data as any
+        const d = el.data as ExtendedData & typeof el.data
         const defaults = getDefaults(d)
         const layout = layoutText({
           runs: getRuns(d),
@@ -818,7 +948,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         }
       }
 
-      const commonProps = (el: CanvasElement) => ({
+      const commonProps = (el: CanvasElement): ShapeProps => ({
         id: el.id,
         draggable: tool === 'select',
         opacity: el.data.opacity ?? 1,
@@ -828,98 +958,69 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         },
         onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
           e.cancelBubble = true
-          if (el.type === 'text') startEditing(el.id)
         },
         onDragStart: () => handleDragStart(el.id),
         onDragEnd:   (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
         onTransformEnd: (e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e),
       })
 
+      // Path shape-lər üçün ortaq render helper
+      const renderPathShape = (
+          el: CanvasElement,
+          cp: ShapeProps,
+          pathData: string,
+          w: number, h: number
+      ) => {
+        const d = el.data
+        return (
+            <Path key={el.id} {...cp}
+                  x={d.x ?? 0} y={d.y ?? 0}
+                  data={applySloppinessPath(pathData, d.sloppiness ?? 0, el.id)}
+                  fill={d.fill === 'transparent' ? undefined : d.fill}
+                  stroke={d.stroke === 'transparent' ? undefined : d.stroke}
+                  strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
+                  hitFunc={makeRectHitFunc(w, h)} />
+        )
+      }
+
       const renderElement = (el: CanvasElement) => {
-        const d = el.data; const cp = commonProps(el)
+        const d = el.data as typeof el.data & ExtendedData; const cp = commonProps(el)
         switch (el.type) {
           case 'rect': {
-            const slop = (d as any).sloppiness ?? 0
+            const slop = d.sloppiness ?? 0
             const jitter = slop === 1 ? 1.5 : slop === 2 ? 3 : 0
-            const cr = d.cornerRadius as any ?? 0
-            return <Rect key={el.id} {...cp} x={(d.x??0) + (jitter ? (Math.sin(el.id.charCodeAt(0))*jitter) : 0)}
+            const rawCr = d.cornerRadius  // number | number[] | undefined — Konva Rect qəbul edir
+            const cr = normCr(d.cornerRadius)
+            return <Rect key={el.id} {...cp}
+                         x={(d.x??0) + (jitter ? (Math.sin(el.id.charCodeAt(0))*jitter) : 0)}
                          y={(d.y??0) + (jitter ? (Math.cos(el.id.charCodeAt(1))*jitter) : 0)}
                          width={Math.abs(d.width||0) + (jitter ? Math.abs(Math.sin(el.id.charCodeAt(2))*jitter) : 0)}
                          height={Math.abs(d.height||0) + (jitter ? Math.abs(Math.cos(el.id.charCodeAt(3))*jitter) : 0)}
-                         offsetX={d.width&&d.width<0?Math.abs(d.width):0} offsetY={d.height&&d.height<0?Math.abs(d.height):0}
-                         fill={d.fill==='transparent'?undefined:d.fill} stroke={d.stroke==='transparent'?undefined:d.stroke}
-                         strokeWidth={d.strokeWidth} rotation={d.rotation}
-                         cornerRadius={slop > 0 ? (Array.isArray(cr) ? cr.map((v:number)=>v+slop*2) : (cr as number)+slop*2) : cr}
-                         dash={d.dash} />
+                         {...sharedRectProps(d)}
+                         cornerRadius={slop > 0
+                             ? (Array.isArray(rawCr) ? (rawCr as number[]).map(v => v + slop*2) : cr + slop*2)
+                             : (rawCr ?? 0)} />
           }
           case 'circle': {
-            const slop = (d as any).sloppiness ?? 0
+            const slop = d.sloppiness ?? 0
             const jitter = slop === 1 ? 1.5 : slop === 2 ? 4 : 0
             const j = (i: number) => jitter ? Math.sin(el.id.charCodeAt(i) + i) * jitter : 0
             return <Rect key={el.id} {...cp}
                          x={(d.x??0)+j(0)} y={(d.y??0)+j(1)}
                          width={Math.abs(d.width||0)+Math.abs(j(2))} height={Math.abs(d.height||0)+Math.abs(j(3))}
-                         offsetX={d.width&&d.width<0?Math.abs(d.width):0} offsetY={d.height&&d.height<0?Math.abs(d.height):0}
-                         fill={d.fill==='transparent'?undefined:d.fill} stroke={d.stroke==='transparent'?undefined:d.stroke}
-                         strokeWidth={d.strokeWidth}
-                         cornerRadius={d.cornerRadius as any ?? 99999} rotation={d.rotation}
-                         dash={d.dash} />
+                         {...sharedRectProps(d)}
+                         cornerRadius={normCr(d.cornerRadius) || 99999} />
           }
           case 'line': {
             const pts = d.points || []
-            const slop = (d as any).sloppiness ?? 0
-            const hasBend = pts.length >= 6 && (() => {
-              const mx = (pts[0] + pts[4]) / 2; const my = (pts[1] + pts[5]) / 2
-              return Math.abs(pts[2] - mx) > 5 || Math.abs(pts[3] - my) > 5
-            })()
+            const slop = d.sloppiness ?? 0
+            const hasBend = checkBend(pts)
 
             const buildLinePts = (): number[] => {
               const x0 = pts[0], y0 = pts[1]
               const x1 = pts[pts.length-2], y1 = pts[pts.length-1]
-              const mx = pts.length >= 6 ? pts[2] : (x0+x1)/2
-              const my = pts.length >= 6 ? pts[3] : (y0+y1)/2
-
-              if (slop === 0) {
-                // Düz və ya əyri — sadəcə points-i qaytar
-                return hasBend ? pts : [x0,y0,x1,y1]
-              }
-
-              // Xəttin uzunluğunu tap — offset ona nisbətən olsun
-              const len = Math.hypot(x1-x0, y1-y0)
-              // Perpendikulyar istiqaməti hesabla
-              const dx = x1-x0, dy = y1-y0
-              const dist = Math.hypot(dx, dy) || 1
-              const px = -dy/dist, py = dx/dist  // perpendicular unit vector
-
-              const seed = el.id.split('').reduce((a,c)=>a+c.charCodeAt(0),0)
-              const rnd = seededRand(seed)
-
-              if (slop === 1) {
-                // 1 əyrilik — 2 kontrol nöqtəsi ilə S-forması (slop=2-nin yumşaq versiyası)
-                const amp = len * 0.18
-                const sign = rnd() > 0.5 ? 1 : -1
-                const p1x = x0 + dx*0.25 + px*amp*sign
-                const p1y = y0 + dy*0.25 + py*amp*sign
-                const p2x = x0 + dx*0.75 + px*amp*(-sign)
-                const p2y = y0 + dy*0.75 + py*amp*(-sign)
-                return [x0,y0, p1x,p1y, p2x,p2y, x1,y1]
-              } else {
-                // 2 əyrilik — 4 kontrol nöqtəsi ilə W/S forması
-                const amp = len * 0.28
-                const sign = rnd() > 0.5 ? 1 : -1
-                // Xəttin 4 bərabər hissəsindəki kontrol nöqtələri — əks istiqamətdə
-                const p1x = x0 + dx*0.2  + px*amp*sign
-                const p1y = y0 + dy*0.2  + py*amp*sign
-                const p2x = x0 + dx*0.45 + px*amp*(-sign)*0.7
-                const p2y = y0 + dy*0.45 + py*amp*(-sign)*0.7
-                const p3x = x0 + dx*0.65 + px*amp*sign*0.8
-                const p3y = y0 + dy*0.65 + py*amp*sign*0.8
-                const p4x = x0 + dx*0.85 + px*amp*(-sign)*0.5
-                const p4y = y0 + dy*0.85 + py*amp*(-sign)*0.5
-                // Catmull-Rom spline: p1..p4 arasından keç
-                const splinePts = [x0,y0, p1x,p1y, p2x,p2y, p3x,p3y, p4x,p4y, x1,y1]
-                return splinePts
-              }
+              if (slop === 0) return hasBend ? pts : [x0,y0,x1,y1]
+              return buildSloppyPts(x0, y0, x1, y1, slop, el.id)
             }
 
             const renderPts = buildLinePts()
@@ -933,24 +1034,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           }
           case 'arrow': {
             const pts = d.points || []
-            const slop = (d as any).sloppiness ?? 0
-            const hasBend = pts.length >= 6 && (() => {
-              const mx = (pts[0] + pts[4]) / 2; const my = (pts[1] + pts[5]) / 2
-              return Math.abs(pts[2] - mx) > 5 || Math.abs(pts[3] - my) > 5
-            })()
+            const slop = d.sloppiness ?? 0
+            const hasBend = checkBend(pts)
             const buildArrowPts = (): number[] => {
               const x0=pts[0], y0=pts[1]
               const x1=pts[pts.length-2], y1=pts[pts.length-1]
               const mx = pts.length >= 6 ? pts[2] : (x0+x1)/2
               const my = pts.length >= 6 ? pts[3] : (y0+y1)/2
-              const dx=x1-x0, dy=y1-y0
-              const dist=Math.hypot(dx,dy)||1
-              const px=-dy/dist, py=dx/dist
-              const len=dist
-              const seed=el.id.split('').reduce((a,c)=>a+c.charCodeAt(0),0)
-              const rnd=seededRand(seed)
               if (slop === 0 && !hasBend) return [x0,y0,x1,y1]
               if (slop === 0) {
+                // Bezier interpolasiya — əyri arrow
                 const result: number[] = []
                 for (let i=0;i<=14;i++){
                   const t=i/14
@@ -960,27 +1053,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                   )
                 }
                 return result
-              } else if (slop === 1) {
-                const amp=len*0.18
-                const sign=rnd()>0.5?1:-1
-                const p1x=x0+dx*0.25+px*amp*sign
-                const p1y=y0+dy*0.25+py*amp*sign
-                const p2x=x0+dx*0.75+px*amp*(-sign)
-                const p2y=y0+dy*0.75+py*amp*(-sign)
-                return [x0,y0, p1x,p1y, p2x,p2y, x1,y1]
-              } else {
-                const amp=len*0.28
-                const sign=rnd()>0.5?1:-1
-                const p1x=x0+dx*0.2 +px*amp*sign
-                const p1y=y0+dy*0.2 +py*amp*sign
-                const p2x=x0+dx*0.45+px*amp*(-sign)*0.7
-                const p2y=y0+dy*0.45+py*amp*(-sign)*0.7
-                const p3x=x0+dx*0.65+px*amp*sign*0.8
-                const p3y=y0+dy*0.65+py*amp*sign*0.8
-                const p4x=x0+dx*0.85+px*amp*(-sign)*0.5
-                const p4y=y0+dy*0.85+py*amp*(-sign)*0.5
-                return [x0,y0, p1x,p1y, p2x,p2y, p3x,p3y, p4x,p4y, x1,y1]
               }
+              return buildSloppyPts(x0, y0, x1, y1, slop, el.id)
             }
             const sw = d.strokeWidth ?? 2
             return (
@@ -996,7 +1070,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
             )
           }
           case 'freehand': {
-            const slop = (d as any).sloppiness ?? 0
+            const slop = d.sloppiness ?? 0
             return <Line key={el.id} {...cp} points={d.points} stroke={d.stroke} strokeWidth={d.strokeWidth}
                          tension={slop === 0 ? 0.5 : slop === 1 ? 0.65 : 0.8}
                          lineCap="round" lineJoin="round" dash={d.dash} />
@@ -1023,29 +1097,19 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           case 'hexagon': {
             const sides  = el.type === 'triangle' ? 3 : el.type === 'pentagon' ? 5 : 6
             const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
-            const cr = (d.cornerRadius as any) ?? 0
+            const cr = normCr(d.cornerRadius)
             const rx = w / 2; const ry = h / 2
             const pts: number[][] = []
             for (let i = 0; i < sides; i++) {
               const angle = (Math.PI * 2 * i / sides) - Math.PI / 2
               pts.push([rx + rx * Math.cos(angle), ry + ry * Math.sin(angle)])
             }
-            const pathData = roundedPolygonPath(pts, cr)
-            return <Path key={el.id} {...cp}
-                         x={d.x ?? 0} y={d.y ?? 0}
-                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
-                         fill={d.fill==='transparent'?undefined:d.fill}
-                         stroke={d.stroke==='transparent'?undefined:d.stroke}
-                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
-                         hitFunc={(ctx: any, shape: any) => {
-                           ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
-                           ctx.fillStrokeShape(shape)
-                         }} />
+            return renderPathShape(el, cp, roundedPolygonPath(pts, cr), w, h)
           }
 
           case 'star': {
             const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
-            const cr = (d.cornerRadius as any) ?? 0
+            const cr = normCr(d.cornerRadius)
             const outerRx = w / 2; const outerRy = h / 2
             const innerRx = outerRx * 0.45; const innerRy = outerRy * 0.45
             const pts: number[][] = []
@@ -1055,74 +1119,34 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
               const ry = i % 2 === 0 ? outerRy : innerRy
               pts.push([outerRx + rx * Math.cos(angle), outerRy + ry * Math.sin(angle)])
             }
-            const pathData = roundedPolygonPath(pts, cr)
-            return <Path key={el.id} {...cp}
-                         x={d.x ?? 0} y={d.y ?? 0}
-                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
-                         fill={d.fill==='transparent'?undefined:d.fill}
-                         stroke={d.stroke==='transparent'?undefined:d.stroke}
-                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
-                         hitFunc={(ctx: any, shape: any) => {
-                           ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
-                           ctx.fillStrokeShape(shape)
-                         }} />
+            return renderPathShape(el, cp, roundedPolygonPath(pts, cr), w, h)
           }
 
           case 'diamond': {
             const w = Math.abs(d.width ?? 0); const h = Math.abs(d.height ?? 0)
-            const cr = (d.cornerRadius as any) ?? 0
+            const cr = normCr(d.cornerRadius)
             const diamondPts: number[][] = [[w/2,0],[w,h/2],[w/2,h],[0,h/2]]
-            const pathData = roundedPolygonPath(diamondPts, cr)
-            return <Path key={el.id} {...cp}
-                         x={d.x ?? 0} y={d.y ?? 0}
-                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
-                         fill={d.fill==='transparent'?undefined:d.fill}
-                         stroke={d.stroke==='transparent'?undefined:d.stroke}
-                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
-                         hitFunc={(ctx: any, shape: any) => {
-                           ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.closePath()
-                           ctx.fillStrokeShape(shape)
-                         }} />
+            return renderPathShape(el, cp, roundedPolygonPath(diamondPts, cr), w, h)
           }
 
           case 'parallelogram': {
             const pw = Math.abs(d.width ?? 0); const ph = Math.abs(d.height ?? 0)
-            const cr = (d.cornerRadius as any) ?? 0
+            const cr = normCr(d.cornerRadius)
             const skew = pw * 0.25
             const paraPts: number[][] = [[skew,0],[pw,0],[pw-skew,ph],[0,ph]]
-            const pathData = roundedPolygonPath(paraPts, cr)
-            return <Path key={el.id} {...cp}
-                         x={d.x ?? 0} y={d.y ?? 0}
-                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
-                         fill={d.fill==='transparent'?undefined:d.fill}
-                         stroke={d.stroke==='transparent'?undefined:d.stroke}
-                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
-                         hitFunc={(ctx: any, shape: any) => {
-                           ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.closePath()
-                           ctx.fillStrokeShape(shape)
-                         }} />
+            return renderPathShape(el, cp, roundedPolygonPath(paraPts, cr), pw, ph)
           }
 
           case 'cross': {
             const cw = Math.abs(d.width??0); const ch = Math.abs(d.height??0)
             const t = cw/3; const t2 = ch/3
-            const cr = (d.cornerRadius as any) ?? 0
+            const cr = normCr(d.cornerRadius)
             const crossPts = [
               [t, 0], [cw-t, 0], [cw-t, t2], [cw, t2],
               [cw, ch-t2], [cw-t, ch-t2], [cw-t, ch], [t, ch],
               [t, ch-t2], [0, ch-t2], [0, t2], [t, t2],
             ]
-            const pathData = roundedPolygonPath(crossPts, cr)
-            return <Path key={el.id} {...cp}
-                         x={d.x??0} y={d.y??0}
-                         data={applySloppinessPath(pathData, (d as any).sloppiness ?? 0, el.id)}
-                         fill={d.fill==='transparent'?undefined:d.fill}
-                         stroke={d.stroke==='transparent'?undefined:d.stroke}
-                         strokeWidth={d.strokeWidth} rotation={d.rotation ?? 0} dash={d.dash}
-                         hitFunc={(ctx: any, shape: any) => {
-                           ctx.beginPath(); ctx.rect(0, 0, cw, ch); ctx.closePath()
-                           ctx.fillStrokeShape(shape)
-                         }} />
+            return renderPathShape(el, cp, roundedPolygonPath(crossPts, cr), cw, ch)
           }
 
           case 'cylinder': {
@@ -1130,6 +1154,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
             const ry = Math.max(cyH * 0.15, 8)
             const fill = d.fill==='transparent'?undefined:d.fill
             const stroke = d.stroke==='transparent'?undefined:d.stroke
+            const cyProps = { fill, stroke, strokeWidth: d.strokeWidth, dash: d.dash }
             return (
                 <Group key={el.id} {...cp}
                        x={d.x??0} y={d.y??0}
@@ -1138,19 +1163,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                        opacity={d.opacity??1}
                 >
                   {/* Gövdə */}
-                  <Rect
-                      x={0} y={ry} width={cyW} height={cyH - ry*2}
-                      fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} dash={d.dash}/>
+                  <Rect x={0} y={ry} width={cyW} height={cyH - ry*2} {...cyProps}/>
                   {/* Alt ellips */}
-                  <Ellipse
-                      x={cyW/2} y={cyH - ry}
-                      radiusX={cyW/2} radiusY={ry}
-                      fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} dash={d.dash}/>
+                  <Ellipse x={cyW/2} y={cyH - ry} radiusX={cyW/2} radiusY={ry} {...cyProps}/>
                   {/* Üst ellips */}
-                  <Ellipse
-                      x={cyW/2} y={ry}
-                      radiusX={cyW/2} radiusY={ry}
-                      fill={fill} stroke={stroke} strokeWidth={d.strokeWidth} dash={d.dash}/>
+                  <Ellipse x={cyW/2} y={ry} radiusX={cyW/2} radiusY={ry} {...cyProps}/>
                 </Group>
             )
           }
@@ -1172,7 +1189,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         if (pts.length < 6) return null
 
         // Scale-ə görə handle ölçüsünü tənzimlə — zoom edəndə handle-lar çox böyüməsin
-        const sc = stageScaleRef.current
+        const sc = stageScale
         const hs = Math.max(8, Math.min(14, 10 / sc))  // ekran pikseli olaraq sabit görünür
         const hs2 = hs / 2
 
@@ -1198,7 +1215,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                             e.cancelBubble = true
                             const node = e.target
                             const nx = node.x() + hs2; const ny = node.y() + hs2
-                            const cur = [...(elementsRef.current.find(v=>v.id===el.id)?.data.points || pts)]
+                            const cur = [...(elements.find(v=>v.id===el.id)?.data.points || pts)]
                             cur[dataIdx] = nx; cur[dataIdx+1] = ny
                             // Orta nöqtə hələ sürüklənməyibsə avtomatik mərkəzdə saxla
                             const defMx=(cur[0]+cur[4])/2; const defMy=(cur[1]+cur[5])/2
@@ -1229,13 +1246,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                             e.cancelBubble = true
                             const node = e.target
                             const nx=node.x()+ms2; const ny=node.y()+ms2
-                            const cur=[...(elementsRef.current.find(v=>v.id===el.id)?.data.points||pts)]
+                            const cur=[...(elements.find(v=>v.id===el.id)?.data.points||pts)]
                             cur[2]=nx; cur[3]=ny
                             updatePts(cur)
                             node.x(nx-ms2); node.y(ny-ms2)
                           }}
                           onDblClick={() => {
-                            const cur=[...(elementsRef.current.find(v=>v.id===el.id)?.data.points||pts)]
+                            const cur=[...(elements.find(v=>v.id===el.id)?.data.points||pts)]
                             cur[2]=(cur[0]+cur[4])/2; cur[3]=(cur[1]+cur[5])/2
                             updatePts(cur); pushHistory()
                           }}
@@ -1247,8 +1264,24 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         )
       }
 
+      const cursorStyle = isSpacePan
+          ? (isDragging ? 'grabbing' : 'grab')
+          : tool === 'pan'    ? (isDragging ? 'grabbing' : 'grab')
+              : tool === 'eraser' ? 'none'
+                  : tool === 'select' ? 'default'
+                      : 'crosshair'
+
       return (
-          <div className="relative w-full h-full" style={{ background: '#ffffff', overflow: 'hidden' }}>
+          <div
+              className="relative w-full h-full overflow-hidden"
+              style={{
+                // Dot-grid fon — A4-ün arxasında görünür
+                background: '#f1f5f9',
+                backgroundImage: `radial-gradient(circle, #94a3b8 1px, transparent 1px)`,
+                backgroundSize: `${20 * stageScale}px ${20 * stageScale}px`,
+                backgroundPosition: `${stagePos.x}px ${stagePos.y}px`,
+              }}
+          >
             <Stage
                 ref={stageRef}
                 width={width} height={height}
@@ -1258,11 +1291,32 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseLeave}
                 draggable={false}
-                style={{ cursor: isSpacePan ? (isPanning.current ? 'grabbing' : 'grab') : tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair' }}
+                style={{ cursor: cursorStyle }}
             >
+              <Layer listening={false}>
+                {/* A4 kağız kölgəsi */}
+                <Rect
+                    x={4} y={6}
+                    width={A4_W} height={A4_H}
+                    fill="rgba(0,0,0,0.12)"
+                    listening={false}
+                />
+                {/* A4 ağ kağız */}
+                <Rect
+                    x={0} y={0}
+                    width={A4_W} height={A4_H}
+                    fill="#ffffff"
+                    stroke="#e2e8f0"
+                    strokeWidth={1 / stageScale}
+                    listening={false}
+                />
+              </Layer>
+
               <Layer>
-                {[...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map(renderElement)}
+                {/* eslint-disable-next-line react-hooks/refs */}
+                {[...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map((el) => renderElement(el))}
                 {/* Rubber band selection box */}
                 {selBox && selBox.w > 2 && (
                     <Rect
@@ -1272,19 +1326,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                         listening={false}
                     />
                 )}
-                <Transformer
-                    ref={transformerRef}
-                    rotateEnabled={selectedIds.length === 1}
-                    enabledAnchors={selectedIds.length === 1
-                        ? ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']
-                        : []
-                    }
-                    keepRatio={false}
-                    boundBoxFunc={(oldBox, newBox) => (newBox.width < 5 || newBox.height < 5 ? oldBox : newBox)}
-                    ignoreStroke={true}
-                    shouldOverdrawWholeArea={false}
-                />
+                <SelectionTransformer onMount={onTransformerMount} selectedCount={selectedIds.length} />
               </Layer>
+
               {/* Arrow/Line handle-ları — Transformer-dən ayrı Layer-də */}
               <Layer listening={true}>
                 {renderLineHandles()}
@@ -1302,6 +1346,23 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                     areaH={editPos.areaH}
                     onChange={(runs) => handleRunsChange(editingId, runs)}
                     onFinish={finishEditing}
+                />
+            )}
+
+            {/* Eraser kursoru — dairəvi brush göstəricisi */}
+            {tool === 'eraser' && eraserPos && (
+                <div
+                    style={{
+                      position: 'absolute',
+                      pointerEvents: 'none',
+                      left: stagePos.x + eraserPos.x * stageScale - ERASER_RADIUS * stageScale,
+                      top:  stagePos.y + eraserPos.y * stageScale - ERASER_RADIUS * stageScale,
+                      width:  ERASER_RADIUS * 2 * stageScale,
+                      height: ERASER_RADIUS * 2 * stageScale,
+                      borderRadius: '50%',
+                      border: '2px solid #6366f1',
+                      background: 'rgba(99,102,241,0.08)',
+                    }}
                 />
             )}
           </div>
@@ -1323,4 +1384,25 @@ function ImageElement({ el, commonProps }: { el: CanvasElement; commonProps: obj
   }, [d.src])
   if (!image) return null
   return <KonvaImage {...commonProps} x={d.x} y={d.y} width={d.width} height={d.height} image={image} rotation={d.rotation} />
+}
+// Transformer-i ayrı komponentə çıxarırıq ki render zamanı ref oxuma xətası olmasın
+interface SelectionTransformerProps {
+  onMount: (tr: Konva.Transformer | null) => void
+  selectedCount: number
+}
+function SelectionTransformer({ onMount, selectedCount }: SelectionTransformerProps) {
+  return (
+      <Transformer
+          ref={onMount}
+          rotateEnabled={selectedCount === 1}
+          enabledAnchors={selectedCount === 1
+              ? ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']
+              : []
+          }
+          keepRatio={false}
+          boundBoxFunc={(oldBox, newBox) => (newBox.width < 5 || newBox.height < 5 ? oldBox : newBox)}
+          ignoreStroke={true}
+          shouldOverdrawWholeArea={false}
+      />
+  )
 }
