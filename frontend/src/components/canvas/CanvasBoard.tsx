@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useLayoutEffect, useCallback, startTransition, forwardRef, useImperativeHandle } from 'react'
+import React, { useRef, useState, useEffect, useLayoutEffect, useCallback, startTransition, forwardRef, useImperativeHandle } from 'react'
 import Konva from 'konva'
 import {
   Stage, Layer, Rect, Arrow, Image as KonvaImage,
@@ -188,7 +188,7 @@ function checkBend(pts: number[]): boolean {
 const A4_W_PT = 794
 const A4_H_PT = 1123
 
-interface CanvasBoardProps { width: number; height: number }
+interface CanvasBoardProps { width: number; height: number; canvasId: string }
 export interface CanvasBoardHandle { exportImage: () => string | null }
 
 const SHAPE_DEFAULTS = {
@@ -209,16 +209,17 @@ const SHAPE_DEFAULTS = {
 }
 
 const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
-    function CanvasBoard({ width, height }, ref) {
+    function CanvasBoard({ width, height, canvasId }, ref) {
 
       const {
         elements, tool, selectedIds,
         addElement, updateElement, deleteSelected, deleteElement,
         setSelectedIds, setTool, pushHistory,
+        eraserSize,
       } = useCanvasStore()
 
       // Aktiv page-in orientasiyasına görə A4 ölçüsü
-      const { pages, activePageId } = usePageStore()
+      const { pages, activePageId, switchPage, createPage, deletePage } = usePageStore()
       const activePage = pages.find(p => p.id === activePageId)
       const isLandscape = activePage?.orientation === 'landscape'
       const A4_W = isLandscape ? A4_H_PT : A4_W_PT
@@ -248,20 +249,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       const [stageScale, setStageScale] = useState(1)
 
       // A4-ü ekrana fit et — ilk yükləmədə və orientation dəyişəndə
-      const fitA4ToScreen = useCallback((a4W: number, a4H: number) => {
-        const padding = 32
-        const scaleX = (width  - padding * 2) / a4W
-        const scaleY = (height - padding * 2) / a4H
-        const scale  = Math.min(scaleX, scaleY)
-        const x = (width  - a4W * scale) / 2
-        const y = (height - a4H * scale) / 2
-        stagePosRef.current   = { x, y }
-        stageScaleRef.current = scale
-        startTransition(() => {
-          setStageScale(scale)
-          setStagePos({ x, y })
-        })
-      }, [width, height])
       const [editingId,  setEditingId]  = useState<string | null>(null)
       const [editPos,    setEditPos]    = useState({ x: 0, y: 0, scale: 1, areaW: undefined as number|undefined, areaH: undefined as number|undefined })
       const [isSpacePan,  setIsSpacePan]  = useState(false)
@@ -273,7 +260,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       const selStart  = useRef<{ x: number; y: number } | null>(null)
 
       // Eraser
-      const ERASER_RADIUS = 20  // canvas koordinatında px
       const isEraserDown  = useRef(false)
       const [eraserPos, setEraserPos] = useState<{ x: number; y: number } | null>(null)
 
@@ -281,10 +267,25 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       useEffect(() => { stageScaleRef.current = stageScale }, [stageScale])
       useEffect(() => { elementsRef.current = elements },     [elements])
 
-      // İlk yükləmə + orientation dəyişikliyi + container ölçüsü dəyişikliyi
+      // İlk yükləmə — tək A4-ü mərkəzdə fit et
+      const initialFitDone = useRef(false)
       useLayoutEffect(() => {
-        if (width > 0 && height > 0) fitA4ToScreen(A4_W, A4_H)
-      }, [A4_W, A4_H, width, height, fitA4ToScreen])
+        if (width > 0 && height > 0 && !initialFitDone.current) {
+          initialFitDone.current = true
+          const padding = 60
+          const scaleX = (width  - padding * 2) / A4_W_PT
+          const scaleY = (height - padding * 2) / A4_H_PT
+          const scale  = Math.min(scaleX, scaleY, 1.2)   // max 120% — çox böyük olmasın
+          const x = (width  - A4_W_PT * scale) / 2
+          const y = (height - A4_H_PT * scale) / 2
+          stagePosRef.current   = { x, y }
+          stageScaleRef.current = scale
+          startTransition(() => {
+            setStageScale(scale)
+            setStagePos({ x, y })
+          })
+        }
+      }, [width, height])
 
       // Export — yalnız A4 sahəsini çıxar
       useImperativeHandle(ref, () => ({
@@ -529,15 +530,53 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
       // Eraser — kursora toxunan elementləri tap və sil
       const eraseAtPoint = useCallback((px: number, py: number) => {
-        const toDelete = elementsRef.current.filter((el) => {
+        const R = eraserSize
+        const toProcess = elementsRef.current.filter((el) => {
+          if (el.type !== 'freehand') return false
           const bb = getElBBox(el)
           const nearX = Math.max(bb.x, Math.min(px, bb.x + bb.w))
           const nearY = Math.max(bb.y, Math.min(py, bb.y + bb.h))
-          const dist  = Math.hypot(px - nearX, py - nearY)
-          return dist <= ERASER_RADIUS
+          return Math.hypot(px - nearX, py - nearY) <= R
         })
-        toDelete.forEach((el) => deleteElement(el.id))
-      }, [deleteElement])
+
+        toProcess.forEach((el) => {
+          const pts = el.data.points as number[] | undefined
+          if (!pts || pts.length < 4) { deleteElement(el.id); return }
+
+          // Nöqtələri dairə içi/xarici kimi qruplaşdır — ardıcıl xarici nöqtələr
+          // ayrı seqmentlər olur (boşluq saxlanır)
+          const segments: number[][] = []
+          let current: number[] = []
+
+          for (let i = 0; i < pts.length - 1; i += 2) {
+            const inside = Math.hypot(pts[i] - px, pts[i + 1] - py) <= R
+            if (inside) {
+              // Dairə içindədir — cari seqmenti bitir
+              if (current.length >= 4) segments.push(current)
+              current = []
+            } else {
+              current.push(pts[i], pts[i + 1])
+            }
+          }
+          if (current.length >= 4) segments.push(current)
+
+          // Orijinal elementi sil
+          deleteElement(el.id)
+
+          // Hər seqmenti ayrı freehand kimi əlavə et
+          segments.forEach((seg) => {
+            addElement({
+              id: uuidv4(),
+              canvas_id: '',
+              type: 'freehand',
+              data: { ...el.data, points: seg },
+              z_index: el.z_index,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+          })
+        })
+      }, [eraserSize, deleteElement, addElement])
 
       const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
         if (isSpaceDown.current) return
@@ -1271,11 +1310,80 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                   : tool === 'select' ? 'default'
                       : 'crosshair'
 
+
+      // 3 sütunlu grid: hər A4 arasında GAP boşluq var
+      // Səhifə canvas koordinatında: col * (A4_W + GAP), row * (A4_H + GAP)
+      const COLS    = 3
+      const PAGE_GAP = 40  // canvas koordinatında px
+
+      // Hər page-in canvas mövqeyini hesabla
+      const pagePositions = pages.map((_, idx) => {
+        const col = idx % COLS
+        const row = Math.floor(idx / COLS)
+        return {
+          x: col * (A4_W_PT + PAGE_GAP),
+          y: row * (A4_H_PT + PAGE_GAP),
+        }
+      })
+
+      // Aktiv page-in ölçüsü (portrait/landscape)
+      const getPageSize = (page: typeof pages[0]) => ({
+        w: page.orientation === 'landscape' ? A4_H_PT : A4_W_PT,
+        h: page.orientation === 'landscape' ? A4_W_PT : A4_H_PT,
+      })
+
+      // Boş yerdə double-click — altındakı page-i seç
+      const handleStageDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+        if (e.target.getType() !== 'Stage') return
+        const pos = getPointerOnStage()
+        // Hansı page-in içindədir?
+        for (let i = pages.length - 1; i >= 0; i--) {
+          const page = pages[i]
+          const ppos = pagePositions[i]
+          const size = getPageSize(page)
+          if (
+              pos.x >= ppos.x && pos.x <= ppos.x + size.w &&
+              pos.y >= ppos.y && pos.y <= ppos.y + size.h
+          ) {
+            if (page.id !== activePageId) switchPage(canvasId, page.id)
+            break
+          }
+        }
+      }, [pages, pagePositions, activePageId, switchPage, canvasId, getPointerOnStage])
+
+      // HTML overlay: page-i ekran koordinatına çevir
+      const toScreen = (cx: number, cy: number) => ({
+        x: stagePos.x + cx * stageScale,
+        y: stagePos.y + cy * stageScale,
+      })
+
+      // "+" düyməsinin yeri: sonuncu page-in sağı
+      const lastIdx = pages.length - 1
+      const lastPos = pagePositions[lastIdx] ?? { x: 0, y: 0 }
+      const lastPage = pages[lastIdx]
+      const lastSize = lastPage ? getPageSize(lastPage) : { w: A4_W_PT, h: A4_H_PT }
+      const addBtnCanvas = {
+        x: lastPos.x + lastSize.w,
+        y: lastPos.y + lastSize.h / 2,
+      }
+      const addBtnScreen = toScreen(addBtnCanvas.x, addBtnCanvas.y)
+
+      const handleAddPage = async () => {
+        try { await createPage(canvasId) }
+        catch { alert('Səhifə yaradılmadı') }
+      }
+
+      const handleDeletePage = async (pageId: string, e: React.MouseEvent) => {
+        e.stopPropagation()
+        if (pages.length <= 1) { alert('Son səhifəni silmək olmaz'); return }
+        try { await deletePage(canvasId, pageId) }
+        catch { alert('Səhifə silinmədi') }
+      }
+
       return (
           <div
               className="relative w-full h-full overflow-hidden"
               style={{
-                // Dot-grid fon — A4-ün arxasında görünür
                 background: '#f1f5f9',
                 backgroundImage: `radial-gradient(circle, #94a3b8 1px, transparent 1px)`,
                 backgroundSize: `${20 * stageScale}px ${20 * stageScale}px`,
@@ -1292,32 +1400,34 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseLeave}
+                onDblClick={handleStageDblClick}
                 draggable={false}
                 style={{ cursor: cursorStyle }}
             >
               <Layer listening={false}>
-                {/* A4 kağız kölgəsi */}
-                <Rect
-                    x={4} y={6}
-                    width={A4_W} height={A4_H}
-                    fill="rgba(0,0,0,0.12)"
-                    listening={false}
-                />
-                {/* A4 ağ kağız */}
-                <Rect
-                    x={0} y={0}
-                    width={A4_W} height={A4_H}
-                    fill="#ffffff"
-                    stroke="#e2e8f0"
-                    strokeWidth={1 / stageScale}
-                    listening={false}
-                />
+                {/* Bütün page-ləri Konva içində render et (kölgə + kağız) */}
+                {pages.map((page, idx) => {
+                  const pos  = pagePositions[idx]
+                  const size = getPageSize(page)
+                  return (
+                      <React.Fragment key={page.id}>
+                        {/* Kölgə */}
+                        <Rect x={pos.x + 4} y={pos.y + 6} width={size.w} height={size.h} fill="rgba(0,0,0,0.12)" listening={false} />
+                        {/* Ağ kağız */}
+                        <Rect
+                            x={pos.x} y={pos.y} width={size.w} height={size.h}
+                            fill="#ffffff"
+                            stroke={activePageId === page.id ? '#6366f1' : '#e2e8f0'}
+                            strokeWidth={(activePageId === page.id ? 2 : 1) / stageScale}
+                            listening={false}
+                        />
+                      </React.Fragment>
+                  )
+                })}
               </Layer>
 
               <Layer>
-                {/* eslint-disable-next-line react-hooks/refs */}
                 {[...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map((el) => renderElement(el))}
-                {/* Rubber band selection box */}
                 {selBox && selBox.w > 2 && (
                     <Rect
                         x={selBox.x} y={selBox.y} width={selBox.w} height={selBox.h}
@@ -1329,11 +1439,120 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                 <SelectionTransformer onMount={onTransformerMount} selectedCount={selectedIds.length} />
               </Layer>
 
-              {/* Arrow/Line handle-ları — Transformer-dən ayrı Layer-də */}
               <Layer listening={true}>
                 {renderLineHandles()}
               </Layer>
             </Stage>
+
+            {/* ── HTML Overlay: page seçim xətti, X düyməsi, + düyməsi ── */}
+            {pages.map((page, idx) => {
+              const pos    = pagePositions[idx]
+              const size   = getPageSize(page)
+              const scr    = toScreen(pos.x, pos.y)
+              const sw     = size.w * stageScale
+              const sh     = size.h * stageScale
+              const isActive = activePageId === page.id
+
+              return (
+                  <div
+                      key={`overlay-${page.id}`}
+                      style={{
+                        position: 'absolute',
+                        left: scr.x,
+                        top:  scr.y,
+                        width:  sw,
+                        height: sh,
+                        pointerEvents: 'none',
+                        zIndex: 5,
+                      }}
+                  >
+                    {/* Seçim xətti */}
+                    {isActive && (
+                        <div style={{
+                          position: 'absolute', inset: 0,
+                          border: `2px solid #6366f1`,
+                          borderRadius: 2,
+                          pointerEvents: 'none',
+                          boxShadow: '0 0 0 1px rgba(99,102,241,0.2)',
+                        }} />
+                    )}
+
+                    {/* Səhifə nömrəsi — sol alt künc */}
+                    <div style={{
+                      position: 'absolute', bottom: 6, left: 8,
+                      fontSize: Math.max(9, 11 * stageScale),
+                      color: '#94a3b8',
+                      pointerEvents: 'none',
+                      userSelect: 'none',
+                    }}>
+                      {idx + 1}
+                    </div>
+
+                    {/* X sil düyməsi — active olanda görünür, pointerEvents: all */}
+                    {pages.length > 1 && (
+                        <button
+                            onClick={(e) => handleDeletePage(page.id, e)}
+                            style={{
+                              position: 'absolute',
+                              top: -10,
+                              right: -10,
+                              width: 22,
+                              height: 22,
+                              borderRadius: '50%',
+                              background: '#ef4444',
+                              border: '2px solid white',
+                              color: 'white',
+                              fontSize: 13,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              pointerEvents: 'all',
+                              zIndex: 20,
+                              opacity: isActive ? 1 : 0,
+                              transition: 'opacity 0.15s',
+                              padding: 0,
+                              boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+                            }}
+                            onMouseEnter={e => (e.currentTarget as HTMLElement).style.opacity = '1'}
+                            onMouseLeave={e => (e.currentTarget as HTMLElement).style.opacity = isActive ? '1' : '0'}
+                        >
+                          ×
+                        </button>
+                    )}
+                  </div>
+              )
+            })}
+
+            {/* + Yeni səhifə düyməsi — sonuncu page-in sağında */}
+            <button
+                onClick={handleAddPage}
+                style={{
+                  position: 'absolute',
+                  left: addBtnScreen.x + 24,
+                  top:  addBtnScreen.y - 16,
+                  width: 32, height: 32,
+                  borderRadius: '50%',
+                  background: '#6366f1',
+                  color: 'white',
+                  fontSize: 20,
+                  lineHeight: '30px',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  border: 'none',
+                  boxShadow: '0 2px 8px rgba(99,102,241,0.4)',
+                  zIndex: 10,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'transform 0.15s, box-shadow 0.15s',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'scale(1.12)'; (e.currentTarget as HTMLElement).style.boxShadow = '0 4px 14px rgba(99,102,241,0.5)' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'scale(1)';    (e.currentTarget as HTMLElement).style.boxShadow = '0 2px 8px rgba(99,102,241,0.4)' }}
+                title="Yeni səhifə"
+            >
+              +
+            </button>
 
             {editingId && editingEl && (
                 <RichTextEditor
@@ -1349,16 +1568,15 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                 />
             )}
 
-            {/* Eraser kursoru — dairəvi brush göstəricisi */}
             {tool === 'eraser' && eraserPos && (
                 <div
                     style={{
                       position: 'absolute',
                       pointerEvents: 'none',
-                      left: stagePos.x + eraserPos.x * stageScale - ERASER_RADIUS * stageScale,
-                      top:  stagePos.y + eraserPos.y * stageScale - ERASER_RADIUS * stageScale,
-                      width:  ERASER_RADIUS * 2 * stageScale,
-                      height: ERASER_RADIUS * 2 * stageScale,
+                      left: stagePos.x + eraserPos.x * stageScale - eraserSize * stageScale,
+                      top:  stagePos.y + eraserPos.y * stageScale - eraserSize * stageScale,
+                      width:  eraserSize * 2 * stageScale,
+                      height: eraserSize * 2 * stageScale,
                       borderRadius: '50%',
                       border: '2px solid #6366f1',
                       background: 'rgba(99,102,241,0.08)',

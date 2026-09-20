@@ -1,260 +1,454 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, memo } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
-import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RefreshCw } from 'lucide-react'
+import { ZoomIn, ZoomOut, RefreshCw, ExternalLink, Layers } from 'lucide-react'
 import { booksApi } from '../../api/books'
 import { useBookStore } from '../../store/bookStore'
 import type { Annotation } from '../../types'
-import 'react-pdf/dist/Page/AnnotationLayer.css'
+import { getCachedPdf, setCachedPdf } from '../../utils/pdfCache'
 import 'react-pdf/dist/Page/TextLayer.css'
+import 'react-pdf/dist/Page/AnnotationLayer.css'
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.js',
-  import.meta.url,
+    'pdfjs-dist/build/pdf.worker.min.js',
+    import.meta.url,
 ).toString()
 
 interface PDFViewerProps {
-  bookId: string
-  fileUrl: string
+    bookId:  string
+    fileUrl: string
 }
 
-const HIGHLIGHT_COLORS = ['#fde047', '#86efac', '#93c5fd', '#f9a8d4', '#fdba74']
+const COLORS = [
+    { id: 'yellow', bg: 'rgba(253,224,71,0.45)',  border: '#ca8a04' },
+    { id: 'green',  bg: 'rgba(134,239,172,0.45)', border: '#16a34a' },
+    { id: 'blue',   bg: 'rgba(147,197,253,0.45)', border: '#2563eb' },
+    { id: 'pink',   bg: 'rgba(249,168,212,0.45)', border: '#db2777' },
+    { id: 'orange', bg: 'rgba(253,186,116,0.45)', border: '#ea580c' },
+]
+type Color = typeof COLORS[0]
 
-export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
-  const { currentPage, setCurrentPage } = useBookStore()
-  const [numPages,      setNumPages]      = useState(0)
-  const [scale,         setScale]         = useState(1.2)
-  const [annotations,   setAnnotations]   = useState<Annotation[]>([])
-  const [selectedColor, setSelectedColor] = useState(HIGHLIGHT_COLORS[0])
-  const [isSelecting,   setIsSelecting]   = useState(false)
-  const [selectionRect, setSelectionRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
-  const [pdfBlob,       setPdfBlob]       = useState<string | null>(null)
-  const [inputPage,     setInputPage]     = useState(String(currentPage))
-  const [loadError,     setLoadError]     = useState<string | null>(null)
-  const [fetching,      setFetching]      = useState(false)
+// ─── Highlight overlay — memo, yalnız annotations/scale dəyişəndə render ────
+interface OverlayProps {
+    annotations: Annotation[]
+    scale:       number
+    numPages:    number
+    onDelete:    (id: string) => void
+    pageRefs:    React.MutableRefObject<(HTMLDivElement | null)[]>
+    scrollRef:   React.RefObject<HTMLDivElement>
+    onMouseUp:   (pageNum: number, pageEl: HTMLDivElement) => void
+}
 
-  const startPos = useRef<{ x: number; y: number } | null>(null)
-  const pageRef  = useRef<HTMLDivElement>(null)
-
-  const fetchPdf = useCallback(() => {
-    if (!fileUrl) return
-    setLoadError(null)
-    setFetching(true)
-    setPdfBlob(null)
-    const token = localStorage.getItem('access_token')
-    fetch(fileUrl, { headers: { Authorization: `Bearer ${token}` } })
-      .then((res) => {
-        if (!res.ok) throw new Error(`Server xətası: ${res.status}`)
-        return res.blob()
-      })
-      .then((blob) => {
-        if (blob.size === 0) throw new Error('PDF faylı boşdur')
-        setPdfBlob(URL.createObjectURL(blob))
-      })
-      .catch((err) => {
-        console.error('PDF fetch:', err)
-        setLoadError(err.message || 'PDF yüklənmədi')
-      })
-      .finally(() => setFetching(false))
-  }, [fileUrl])
-
-  useEffect(() => { fetchPdf() }, [fetchPdf])
-
-  useEffect(() => {
-    if (!bookId) return
-    booksApi.getAnnotations(bookId)
-      .then((res) => setAnnotations(res.data.data || []))
-      .catch(() => {})
-  }, [bookId])
-
-  useEffect(() => { setInputPage(String(currentPage)) }, [currentPage])
-
-  const goToPage = useCallback((page: number) => {
-    const clamped = Math.min(Math.max(page, 1), numPages || 1)
-    setCurrentPage(clamped)
-    setInputPage(String(clamped))
-    booksApi.updateBookmark(bookId, clamped).catch(() => {})
-  }, [numPages, bookId, setCurrentPage])
-
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!pageRef.current) return
-    const rect = pageRef.current.getBoundingClientRect()
-    startPos.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-    setIsSelecting(true)
-    setSelectionRect(null)
-  }
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isSelecting || !startPos.current || !pageRef.current) return
-    const rect = pageRef.current.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    setSelectionRect({
-      x: Math.min(x, startPos.current.x),
-      y: Math.min(y, startPos.current.y),
-      w: Math.abs(x - startPos.current.x),
-      h: Math.abs(y - startPos.current.y),
-    })
-  }
-
-  const handleMouseUp = async () => {
-    setIsSelecting(false)
-    if (!selectionRect || selectionRect.w < 10 || selectionRect.h < 10) {
-      setSelectionRect(null)
-      return
-    }
-    try {
-      const res = await booksApi.createAnnotation(bookId, {
-        page_number: currentPage,
-        x: selectionRect.x / scale,
-        y: selectionRect.y / scale,
-        width:  selectionRect.w / scale,
-        height: selectionRect.h / scale,
-        color: selectedColor,
-      })
-      setAnnotations((prev) => [...prev, res.data.data])
-    } catch {}
-    setSelectionRect(null)
-    startPos.current = null
-  }
-
-  const deleteAnnotation = async (id: string) => {
-    await booksApi.deleteAnnotation(bookId, id)
-    setAnnotations((prev) => prev.filter((a) => a.id !== id))
-  }
-
-  const pageAnnotations = annotations.filter((a) => a.page_number === currentPage)
-
-  if (fetching) {
+const HighlightOverlay = memo(function HighlightOverlay({
+                                                            annotations, scale, numPages, onDelete, pageRefs, scrollRef, onMouseUp,
+                                                        }: OverlayProps) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
-        <div className="text-gray-400 text-sm">PDF yüklənir...</div>
-      </div>
-    )
-  }
-
-  if (loadError) {
-    return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
-        <div className="text-center p-6">
-          <p className="text-red-500 text-sm mb-1">PDF açıla bilmədi</p>
-          <p className="text-gray-400 text-xs mb-4">{loadError}</p>
-          <button
-            onClick={fetchPdf}
-            className="flex items-center gap-2 mx-auto px-4 py-2 bg-indigo-500 text-white text-sm rounded-lg hover:bg-indigo-600 transition-colors"
-          >
-            <RefreshCw size={14} />
-            Yenidən cəhd et
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex flex-col h-full bg-gray-50">
-      <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
-        <div className="flex gap-1">
-          {HIGHLIGHT_COLORS.map((c) => (
-            <button
-              key={c}
-              onClick={() => setSelectedColor(c)}
-              className={`w-5 h-5 rounded-full border-2 transition-transform ${
-                selectedColor === c ? 'border-gray-600 scale-110' : 'border-transparent'
-              }`}
-              style={{ background: c }}
-            />
-          ))}
-        </div>
-        <div className="flex-1" />
-        <button onClick={() => setScale((s) => Math.max(s - 0.2, 0.5))}
-          className="p-1 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-all">
-          <ZoomOut size={16} />
-        </button>
-        <span className="text-xs text-gray-500 w-10 text-center">{Math.round(scale * 100)}%</span>
-        <button onClick={() => setScale((s) => Math.min(s + 0.2, 3))}
-          className="p-1 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-all">
-          <ZoomIn size={16} />
-        </button>
-        <div className="w-px h-4 bg-gray-200 mx-1" />
-        <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1}
-          className="p-1 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 disabled:opacity-30 transition-all">
-          <ChevronLeft size={16} />
-        </button>
-        <input
-          type="number"
-          value={inputPage}
-          onChange={(e) => setInputPage(e.target.value)}
-          onBlur={() => goToPage(parseInt(inputPage) || currentPage)}
-          onKeyDown={(e) => e.key === 'Enter' && goToPage(parseInt(inputPage) || currentPage)}
-          className="w-12 text-center text-xs border border-gray-200 text-gray-700 rounded-lg px-1 py-1 outline-none focus:border-indigo-400"
-          min={1} max={numPages}
-        />
-        <span className="text-xs text-gray-400">/ {numPages}</span>
-        <button onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= numPages}
-          className="p-1 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 disabled:opacity-30 transition-all">
-          <ChevronRight size={16} />
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-auto flex justify-center py-4 px-2 bg-gray-100">
-        {pdfBlob && (
-          <Document
-            file={pdfBlob}
-            onLoadSuccess={({ numPages }) => setNumPages(numPages)}
-            onLoadError={(err) => {
-              console.error('PDF render xətası:', err)
-              setLoadError('PDF render edilə bilmədi')
-              setPdfBlob(null)
-            }}
-            loading={<div className="text-gray-400 text-sm mt-8">Render olunur...</div>}
-          >
-            <div
-              ref={pageRef}
-              className="relative select-none shadow-lg"
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
+        <div
+            ref={scrollRef as React.RefObject<HTMLDivElement>}
+            style={{ flex: 1, overflowY: 'auto', overflowX: 'auto', background: '#525659' }}
+        >
+            <Document
+                file={null as unknown as string}   // dummy — sadəcə Page-ləri render etmək üçün
+                loading={null}
             >
-              <Page
-                pageNumber={currentPage}
-                scale={scale}
-                renderTextLayer={true}
-                renderAnnotationLayer={false}
-                loading={
-                  <div className="bg-white flex items-center justify-center"
-                    style={{ width: 595 * scale, height: 842 * scale }}>
-                    <span className="text-gray-400 text-sm">Yüklənir...</span>
-                  </div>
-                }
-              />
-              {pageAnnotations.map((ann) => (
-                <div
-                  key={ann.id}
-                  onDoubleClick={() => deleteAnnotation(ann.id)}
-                  title="Çift klik: sil"
-                  className="absolute rounded cursor-pointer hover:opacity-70 transition-opacity"
-                  style={{
-                    left: ann.x * scale, top: ann.y * scale,
-                    width: ann.width * scale, height: ann.height * scale,
-                    background: ann.color, opacity: 0.4,
-                  }}
-                />
-              ))}
-              {selectionRect && (
-                <div
-                  className="absolute pointer-events-none rounded"
-                  style={{
-                    left: selectionRect.x, top: selectionRect.y,
-                    width: selectionRect.w, height: selectionRect.h,
-                    background: selectedColor, opacity: 0.4,
-                    border: `2px solid ${selectedColor}`,
-                  }}
-                />
-              )}
+                {Array.from({ length: numPages }, (_, i) => {
+                    const pageNum  = i + 1
+                    const pageAnns = annotations.filter(a => a.page_number === pageNum)
+                    return (
+                        <div
+                            key={pageNum}
+                            ref={el => { pageRefs.current[i] = el }}
+                            data-page={pageNum}
+                            style={{ display: 'flex', justifyContent: 'center', padding: '12px 0' }}
+                        >
+                            <div
+                                style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}
+                                onMouseUp={e => {
+                                    const pageDiv = e.currentTarget.querySelector('.react-pdf__Page') as HTMLDivElement | null
+                                    if (pageDiv) onMouseUp(pageNum, pageDiv)
+                                }}
+                            >
+                                <Page
+                                    pageNumber={pageNum}
+                                    scale={scale}
+                                    renderTextLayer={true}
+                                    renderAnnotationLayer={true}
+                                    loading={
+                                        <div style={{
+                                            width:  Math.round(595 * scale),
+                                            height: Math.round(842 * scale),
+                                            background: '#fff',
+                                        }} />
+                                    }
+                                />
+                                {pageAnns.map(ann => (
+                                    <div
+                                        key={ann.id}
+                                        title={ann.note ? `${ann.note}\n\nSilmək: iki dəfə klik` : 'Sil: iki dəfə klik'}
+                                        onDoubleClick={() => onDelete(ann.id)}
+                                        style={{
+                                            position:     'absolute',
+                                            left:         ann.x      * scale,
+                                            top:          ann.y      * scale,
+                                            width:        ann.width  * scale,
+                                            height:       ann.height * scale,
+                                            background:   ann.color,
+                                            mixBlendMode: 'multiply',
+                                            cursor:       'pointer',
+                                            pointerEvents:'all',
+                                            borderRadius: 2,
+                                        }}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    )
+                })}
+            </Document>
+        </div>
+    )
+})
+
+// ─── Ana komponent ────────────────────────────────────────────────────────────
+export default function PDFViewer({ bookId, fileUrl }: PDFViewerProps) {
+    const { currentPage, setCurrentPage, currentBook } = useBookStore()
+
+    // İki mode: 'native' = iframe, 'annotate' = react-pdf (highlight mode)
+    const [mode,         setMode]         = useState<'native' | 'annotate'>('native')
+    const [iframeSrc,    setIframeSrc]    = useState<string | null>(null)
+    const [pdfBlob,      setPdfBlob]      = useState<string | null>(null)
+    const [numPages,     setNumPages]     = useState(0)
+    const [scale,        setScale]        = useState(1.2)
+    const [loadError,    setLoadError]    = useState<string | null>(null)
+    const [fetching,     setFetching]     = useState(false)
+    const [annotations,  setAnnotations]  = useState<Annotation[]>([])
+    const [activeColor,  setActiveColor]  = useState(COLORS[0])
+    const [renderedPages, setRenderedPages] = useState<Set<number>>(new Set())
+
+    const scrollRef   = useRef<HTMLDivElement>(null)
+    const pageRefs    = useRef<(HTMLDivElement | null)[]>([])
+    const blobRef     = useRef<string | null>(null)
+    const observerRef = useRef<IntersectionObserver | null>(null)
+    const didScrollRef = useRef(false)
+
+    // ── iframe src — token query param ilə ───────────────────────
+    useEffect(() => {
+        if (!fileUrl) return
+        const token = localStorage.getItem('access_token')
+        // fileUrl: /api/v1/books/:id/file
+        setIframeSrc(`${fileUrl}?token=${token}`)
+    }, [fileUrl])
+
+    // ── blob cache — annotate mode üçün ──────────────────────────
+    const makeBlobUrl = useCallback((buffer: ArrayBuffer) => {
+        if (blobRef.current) { URL.revokeObjectURL(blobRef.current); blobRef.current = null }
+        const url = URL.createObjectURL(new Blob([buffer], { type: 'application/pdf' }))
+        blobRef.current = url
+        return url
+    }, [])
+
+    const loadBlob = useCallback(async () => {
+        if (pdfBlob) return  // artıq yüklənib
+        const cached = await getCachedPdf(bookId)
+        if (cached) { setPdfBlob(makeBlobUrl(cached)); return }
+
+        setFetching(true)
+        try {
+            const token = localStorage.getItem('access_token')
+            const res   = await fetch(fileUrl, { headers: { Authorization: `Bearer ${token}` } })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const buffer = await res.arrayBuffer()
+            if (!buffer.byteLength) throw new Error('PDF boşdur')
+            setCachedPdf(bookId, buffer)
+            setPdfBlob(makeBlobUrl(buffer))
+        } catch (e: unknown) {
+            setLoadError(e instanceof Error ? e.message : 'Xəta')
+        } finally { setFetching(false) }
+    }, [bookId, fileUrl, pdfBlob, makeBlobUrl])
+
+    useEffect(() => () => { if (blobRef.current) URL.revokeObjectURL(blobRef.current) }, [])
+
+    // Annotate mode-a keçəndə blob-u yüklə
+    useEffect(() => {
+        if (mode === 'annotate') loadBlob()
+    }, [mode, loadBlob])
+
+    // ── Annotasiyaları yüklə ──────────────────────────────────────
+    useEffect(() => {
+        if (!bookId) return
+        booksApi.getAnnotations(bookId)
+            .then(r => setAnnotations(r.data.data || []))
+            .catch(() => {})
+    }, [bookId])
+
+    // ── PDF yükləndikdə ───────────────────────────────────────────
+    const handleDocLoad = useCallback(({ numPages: n }: { numPages: number }) => {
+        setNumPages(n)
+        didScrollRef.current = false
+        if (scrollRef.current) {
+            const w = scrollRef.current.offsetWidth
+            if (w > 0) setScale(parseFloat(((w - 32) / 595).toFixed(3)))
+        }
+    }, [])
+
+    // ── last_page-ə scroll ────────────────────────────────────────
+    useEffect(() => {
+        if (didScrollRef.current || mode !== 'annotate') return
+        const target = currentBook?.last_page ?? 1
+        if (target <= 1 || numPages === 0) return
+        const el = pageRefs.current[target - 1]
+        if (!el) return
+        didScrollRef.current = true
+        setTimeout(() => el.scrollIntoView({ behavior: 'auto', block: 'start' }), 120)
+    }, [numPages, renderedPages, currentBook, mode])
+
+    // ── IntersectionObserver ──────────────────────────────────────
+    useEffect(() => {
+        observerRef.current?.disconnect()
+        if (!scrollRef.current || numPages === 0 || mode !== 'annotate') return
+        let timer: ReturnType<typeof setTimeout> | null = null
+        observerRef.current = new IntersectionObserver(entries => {
+            let best: { page: number; ratio: number } | null = null
+            entries.forEach(e => {
+                const p = parseInt((e.target as HTMLElement).dataset.page ?? '0')
+                if (p && e.intersectionRatio > (best?.ratio ?? 0))
+                    best = { page: p, ratio: e.intersectionRatio }
+            })
+            if (best && (best as { page: number; ratio: number }).ratio > 0.15) {
+                const p = (best as { page: number; ratio: number }).page
+                setCurrentPage(p)
+                if (timer) clearTimeout(timer)
+                timer = setTimeout(() => booksApi.updateBookmark(bookId, p).catch(() => {}), 1500)
+            }
+        }, { root: scrollRef.current, threshold: [0.15, 0.5] })
+        pageRefs.current.slice(0, numPages).forEach(el => {
+            if (el) observerRef.current!.observe(el)
+        })
+        return () => { observerRef.current?.disconnect(); if (timer) clearTimeout(timer) }
+    }, [numPages, bookId, setCurrentPage, mode])
+
+    // ── Text seçim → highlight ────────────────────────────────────
+    const handleMouseUp = useCallback(async (pageNum: number, pageEl: HTMLDivElement) => {
+        const sel = window.getSelection()
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
+        const selectedText = sel.toString().trim()
+        if (!selectedText) return
+        const pageRect = pageEl.getBoundingClientRect()
+        const rects    = Array.from(sel.getRangeAt(0).getClientRects())
+        if (!rects.length) return
+        const created: Annotation[] = []
+        for (const r of rects) {
+            if (r.width < 2 || r.height < 2) continue
+            try {
+                const res = await booksApi.createAnnotation(bookId, {
+                    page_number: pageNum,
+                    x:      (r.left - pageRect.left) / scale,
+                    y:      (r.top  - pageRect.top)  / scale,
+                    width:  r.width  / scale,
+                    height: r.height / scale,
+                    color:  activeColor.bg,
+                    note:   selectedText,
+                })
+                created.push(res.data.data)
+            } catch {}
+        }
+        setAnnotations(prev => [...prev, ...created])
+        sel.removeAllRanges()
+    }, [bookId, scale, activeColor])
+
+    const handleDeleteAnn = useCallback(async (id: string) => {
+        await booksApi.deleteAnnotation(bookId, id)
+        setAnnotations(prev => prev.filter(a => a.id !== id))
+    }, [bookId])
+
+    const zoomFit = () => {
+        if (scrollRef.current) {
+            const w = scrollRef.current.offsetWidth
+            if (w > 0) setScale(parseFloat(((w - 32) / 595).toFixed(3)))
+        }
+    }
+
+    return (
+        <div className="flex flex-col h-full">
+
+            {/* ── Toolbar ── */}
+            <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-gray-200 shrink-0">
+
+                <button
+                    onClick={() => setMode(m => m === 'native' ? 'annotate' : 'native')}
+                    title={mode === 'native' ? 'Highlight modu aç' : 'Normal oxuma moduna qayıt'}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-all ${
+                        mode === 'annotate'
+                            ? 'bg-indigo-100 text-indigo-600 border border-indigo-300'
+                            : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 border border-gray-200'
+                    }`}
+                >
+                    <Layers size={13}/>
+                    Highlight
+                </button>
+
+                {mode === 'annotate' && (
+                    <div className="flex gap-1.5 items-center">
+                        {COLORS.map(c => (
+                            <button key={c.id} onClick={() => setActiveColor(c)} title={c.id}
+                                    style={{
+                                        width:16, height:16, borderRadius:'50%', background:c.bg, cursor:'pointer',
+                                        border: activeColor.id===c.id ? `2px solid ${c.border}` : '1.5px solid #d1d5db',
+                                        transform: activeColor.id===c.id ? 'scale(1.2)' : 'scale(1)',
+                                        transition:'all 0.1s', flexShrink:0,
+                                    }}
+                            />
+                        ))}
+                    </div>
+                )}
+
+                <div className="flex-1" />
+
+                {mode === 'annotate' && (
+                    <>
+                        <button onClick={() => setScale(s => Math.max(+(s-0.1).toFixed(2), 0.3))}
+                                className="p-1 text-gray-400 hover:text-gray-700 rounded hover:bg-gray-100">
+                            <ZoomOut size={14}/>
+                        </button>
+                        <span className="text-xs text-gray-500 px-1 min-w-[36px] text-center cursor-pointer hover:text-indigo-500"
+                              onClick={zoomFit} title="Enə uyğunlaşdır">
+              {Math.round(scale*100)}%
+            </span>
+                        <button onClick={() => setScale(s => Math.min(+(s+0.1).toFixed(2), 3))}
+                                className="p-1 text-gray-400 hover:text-gray-700 rounded hover:bg-gray-100">
+                            <ZoomIn size={14}/>
+                        </button>
+                        <div className="w-px h-4 bg-gray-200 mx-1" />
+                        <span className="text-xs text-gray-400 tabular-nums select-none">
+              {currentPage} / {numPages||'—'}
+            </span>
+                        <div className="w-px h-4 bg-gray-200 mx-1" />
+                    </>
+                )}
+
+                <button onClick={() => iframeSrc && window.open(iframeSrc, '_blank')}
+                        title="Yeni tabda aç"
+                        className="p-1 text-gray-400 hover:text-indigo-500 rounded hover:bg-gray-100">
+                    <ExternalLink size={14}/>
+                </button>
+                {mode === 'annotate' && (
+                    <button onClick={() => { setPdfBlob(null); loadBlob() }} title="Yenidən yüklə"
+                            className="p-1 text-gray-400 hover:text-indigo-500 rounded hover:bg-gray-100">
+                        <RefreshCw size={14}/>
+                    </button>
+                )}
             </div>
-          </Document>
-        )}
-      </div>
-    </div>
-  )
+
+            {/* ── Native mode: iframe ── */}
+            {mode === 'native' && (
+                iframeSrc
+                    ? <iframe
+                        key={iframeSrc}
+                        src={iframeSrc}
+                        className="flex-1 w-full border-none"
+                        title="PDF"
+                    />
+                    : <div className="flex-1 flex items-center justify-center">
+                        <div className="w-5 h-5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                    </div>
+            )}
+
+            {/* ── Annotate mode: react-pdf ── */}
+            {mode === 'annotate' && (
+                <>
+                    {fetching && !pdfBlob && (
+                        <div className="flex-1 flex items-center justify-center bg-gray-100">
+                            <div className="flex flex-col items-center gap-3">
+                                <div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                                <span className="text-gray-400 text-sm">PDF yüklənir...</span>
+                            </div>
+                        </div>
+                    )}
+                    {loadError && (
+                        <div className="flex-1 flex items-center justify-center bg-gray-100">
+                            <div className="text-center p-4">
+                                <p className="text-red-500 text-sm mb-3">{loadError}</p>
+                                <button onClick={loadBlob}
+                                        className="px-3 py-1.5 bg-indigo-500 text-white text-sm rounded-lg hover:bg-indigo-600">
+                                    Yenidən cəhd et
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    {pdfBlob && (
+                        <div
+                            ref={scrollRef}
+                            style={{ flex: 1, overflowY: 'auto', overflowX: 'auto', background: '#525659' }}
+                        >
+                            <Document
+                                file={pdfBlob}
+                                onLoadSuccess={handleDocLoad}
+                                onLoadError={e => { console.error(e); setLoadError('PDF render edilə bilmədi') }}
+                                loading={
+                                    <div style={{ height: 128, display: 'flex', alignItems: 'center',
+                                        justifyContent: 'center', color: '#9ca3af' }}>Yüklənir...</div>
+                                }
+                            >
+                                {Array.from({ length: numPages }, (_, i) => {
+                                    const pageNum  = i + 1
+                                    const pageAnns = annotations.filter(a => a.page_number === pageNum)
+                                    return (
+                                        <div
+                                            key={pageNum}
+                                            ref={el => { pageRefs.current[i] = el }}
+                                            data-page={pageNum}
+                                            style={{ display: 'flex', justifyContent: 'center', padding: '12px 0' }}
+                                        >
+                                            <div
+                                                style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}
+                                                onMouseUp={e => {
+                                                    const pageDiv = e.currentTarget.querySelector('.react-pdf__Page') as HTMLDivElement | null
+                                                    if (pageDiv) handleMouseUp(pageNum, pageDiv)
+                                                }}
+                                            >
+                                                <Page
+                                                    pageNumber={pageNum}
+                                                    scale={scale}
+                                                    renderTextLayer={true}
+                                                    renderAnnotationLayer={true}
+                                                    onRenderSuccess={() =>
+                                                        setRenderedPages(prev => new Set([...prev, pageNum]))
+                                                    }
+                                                    loading={
+                                                        <div style={{
+                                                            width: Math.round(595 * scale),
+                                                            height: Math.round(842 * scale),
+                                                            background: '#fff',
+                                                        }} />
+                                                    }
+                                                />
+                                                {pageAnns.map(ann => (
+                                                    <div
+                                                        key={ann.id}
+                                                        title={ann.note ? `${ann.note}\n\nSilmək: iki dəfə klik` : 'Sil: iki dəfə klik'}
+                                                        onDoubleClick={() => handleDeleteAnn(ann.id)}
+                                                        style={{
+                                                            position:     'absolute',
+                                                            left:         ann.x      * scale,
+                                                            top:          ann.y      * scale,
+                                                            width:        ann.width  * scale,
+                                                            height:       ann.height * scale,
+                                                            background:   ann.color,
+                                                            mixBlendMode: 'multiply',
+                                                            cursor:       'pointer',
+                                                            pointerEvents:'all',
+                                                            borderRadius: 2,
+                                                        }}
+                                                    />
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )
+                                })}
+                            </Document>
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
+    )
 }

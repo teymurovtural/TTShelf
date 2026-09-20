@@ -58,6 +58,7 @@ export default function Toolbar({
     const {
         tool, setTool, selectedIds, deleteSelected, undo, redo,
         groupSelected, ungroupSelected, addElement, setElements,
+        eraserSize, setEraserSize,
     } = useCanvasStore()
 
     const imageInputRef = useRef<HTMLInputElement>(null)
@@ -158,6 +159,29 @@ export default function Toolbar({
                 </Tip>
 
                 <div className="ftoolbar-divider" />
+
+                {/* Eraser ölçüsü — yalnız eraser seçiləndə görünür */}
+                {currentTool === 'eraser' && (
+                    <>
+                        <div className="flex items-center gap-1.5 px-1" style={{ minWidth: 120 }}>
+                            <Eraser size={11} className="text-gray-400 shrink-0" />
+                            <input
+                                type="range"
+                                min={5}
+                                max={80}
+                                step={1}
+                                value={eraserSize}
+                                onChange={e => setEraserSize(Number(e.target.value))}
+                                className="flex-1"
+                                style={{ accentColor: '#6366f1', height: 3, cursor: 'pointer' }}
+                            />
+                            <span className="text-gray-400 shrink-0" style={{ fontSize: 10, minWidth: 22 }}>
+                                {eraserSize}
+                            </span>
+                        </div>
+                        <div className="ftoolbar-divider" />
+                    </>
+                )}
 
                 {/* Undo / Redo */}
                 <Tip label="Geri al (Ctrl+Z)">

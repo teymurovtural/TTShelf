@@ -1,5 +1,5 @@
-import { useRef, useState, useEffect } from 'react'
-import { Plus, Lock, Unlock, Trash2, RotateCcw } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Lock, Unlock, Trash2, RotateCcw } from 'lucide-react'
 import { usePageStore } from '../../store/pageStore'
 import { pagesApi } from '../../api/pages'
 import type { CanvasPage } from '../../types'
@@ -19,7 +19,6 @@ export default function PageSidebar({ canvasId }: Props) {
         pages,
         activePageId,
         switchPage,
-        createPage,
         deletePage,
         updatePage,
     } = usePageStore()
@@ -29,23 +28,7 @@ export default function PageSidebar({ canvasId }: Props) {
     const [editTitle, setEditTitle] = useState('')
     const dragItem = useRef<number | null>(null)
     const dragOver = useRef<number | null>(null)
-
-    // Scroll ref — yeni page əlavə olanda aşağı scroll
-    const listRef    = useRef<HTMLDivElement>(null)
-    const prevCount  = useRef(pages.length)
-
-    useEffect(() => {
-        if (pages.length > prevCount.current) {
-            // Yeni page əlavə olundu — aşağı scroll
-            requestAnimationFrame(() => {
-                listRef.current?.scrollTo({
-                    top: listRef.current.scrollHeight,
-                    behavior: 'smooth',
-                })
-            })
-        }
-        prevCount.current = pages.length
-    }, [pages.length])
+    const listRef  = useRef<HTMLDivElement>(null)
 
     // --- Drag & Drop sıralama ---
     const handleDragStart = (idx: number) => { dragItem.current = idx }
@@ -54,20 +37,13 @@ export default function PageSidebar({ canvasId }: Props) {
     const handleDragEnd = async () => {
         if (dragItem.current === null || dragOver.current === null) return
         if (dragItem.current === dragOver.current) return
-
         const reordered = [...pages]
         const dragged = reordered.splice(dragItem.current, 1)[0]
         reordered.splice(dragOver.current, 0, dragged)
-
         const ids = reordered.map((p) => p.id)
         usePageStore.getState().reorderPages(ids)
-
-        try {
-            await pagesApi.reorder(canvasId, { page_ids: ids })
-        } catch (err) {
-            console.error('Sıralama xətası:', err)
-        }
-
+        try { await pagesApi.reorder(canvasId, { page_ids: ids }) }
+        catch (err) { console.error('Sıralama xətası:', err) }
         dragItem.current = null
         dragOver.current = null
     }
@@ -77,16 +53,13 @@ export default function PageSidebar({ canvasId }: Props) {
         e.preventDefault()
         setContextMenu({ x: e.clientX, y: e.clientY, page })
     }
-
     const closeMenu = () => setContextMenu(null)
 
     const handleToggleLock = async (page: CanvasPage) => {
         try {
             await pagesApi.update(canvasId, page.id, { locked: !page.locked })
             updatePage(page.id, { locked: !page.locked })
-        } catch (err) {
-            console.error('Kilid xətası:', err)
-        }
+        } catch (err) { console.error('Kilid xətası:', err) }
         closeMenu()
     }
 
@@ -95,23 +68,14 @@ export default function PageSidebar({ canvasId }: Props) {
         try {
             await pagesApi.update(canvasId, page.id, { orientation: next })
             updatePage(page.id, { orientation: next })
-        } catch (err) {
-            console.error('Orientasiya xətası:', err)
-        }
+        } catch (err) { console.error('Orientasiya xətası:', err) }
         closeMenu()
     }
 
     const handleDelete = async (page: CanvasPage) => {
-        if (pages.length <= 1) {
-            alert('Son səhifəni silmək olmaz')
-            closeMenu()
-            return
-        }
-        try {
-            await deletePage(canvasId, page.id)
-        } catch {
-            alert('Səhifə silinmədi')
-        }
+        if (pages.length <= 1) { alert('Son səhifəni silmək olmaz'); closeMenu(); return }
+        try { await deletePage(canvasId, page.id) }
+        catch { alert('Səhifə silinmədi') }
         closeMenu()
     }
 
@@ -127,32 +91,18 @@ export default function PageSidebar({ canvasId }: Props) {
             try {
                 await pagesApi.update(canvasId, page.id, { title: editTitle.trim() })
                 updatePage(page.id, { title: editTitle.trim() })
-            } catch (err) {
-                console.error('Ad yeniləmə xətası:', err)
-            }
+            } catch (err) { console.error('Ad yeniləmə xətası:', err) }
         }
         setEditingId(null)
     }
 
-    // --- Yeni page — aktiv page dəyişmir ---
-    const handleAddPage = async () => {
-        try {
-            await createPage(canvasId)
-            // switchPage çağırılmır — istifadəçi özü keçəcək
-        } catch {
-            alert('Səhifə yaradılmadı')
-        }
-    }
-
     return (
         <>
-            {/* Sidebar */}
             <div
                 className="flex flex-col bg-gray-50 border-r border-gray-200 shrink-0"
                 style={{ width: 160 }}
                 onClick={() => contextMenu && closeMenu()}
             >
-                {/* Page thumbnail siyahısı — scroll olur */}
                 <div
                     ref={listRef}
                     className="flex-1 py-2 px-2 flex flex-col gap-2 overflow-y-auto"
@@ -174,29 +124,22 @@ export default function PageSidebar({ canvasId }: Props) {
                                     : 'border-gray-200 hover:border-gray-300',
                             ].join(' ')}
                         >
-                            {/* A4 thumbnail */}
                             <div
                                 className="bg-white rounded flex items-center justify-center overflow-hidden"
                                 style={{
                                     width: '100%',
-                                    aspectRatio: page.orientation === 'portrait'
-                                        ? '1 / 1.414'
-                                        : '1.414 / 1',
+                                    aspectRatio: page.orientation === 'portrait' ? '1 / 1.414' : '1.414 / 1',
                                 }}
                             >
-                                <span className="text-gray-300 text-xs font-medium">
-                                    {idx + 1}
-                                </span>
+                                <span className="text-gray-300 text-xs font-medium">{idx + 1}</span>
                             </div>
 
-                            {/* Kilid işarəsi */}
                             {page.locked && (
                                 <div className="absolute top-1 right-1">
                                     <Lock size={10} className="text-gray-400" />
                                 </div>
                             )}
 
-                            {/* Ad */}
                             {editingId === page.id ? (
                                 <input
                                     autoFocus
@@ -213,10 +156,7 @@ export default function PageSidebar({ canvasId }: Props) {
                             ) : (
                                 <p
                                     className="text-xs text-center text-gray-500 truncate px-1 mt-1 mb-1"
-                                    onDoubleClick={(e) => {
-                                        e.stopPropagation()
-                                        startEdit(page)
-                                    }}
+                                    onDoubleClick={(e) => { e.stopPropagation(); startEdit(page) }}
                                 >
                                     {page.title || `Səhifə ${idx + 1}`}
                                 </p>
@@ -224,17 +164,7 @@ export default function PageSidebar({ canvasId }: Props) {
                         </div>
                     ))}
                 </div>
-
-                {/* + Yeni səhifə */}
-                <div className="p-2 border-t border-gray-200 shrink-0">
-                    <button
-                        onClick={handleAddPage}
-                        className="w-full flex items-center justify-center gap-1 py-1.5 rounded-md text-xs text-gray-500 hover:bg-gray-200 hover:text-gray-700 transition-colors"
-                    >
-                        <Plus size={14} />
-                        Yeni səhifə
-                    </button>
-                </div>
+                {/* + Yeni səhifə düyməsi ÇIXARILDI — indi A4-ün sağında */}
             </div>
 
             {/* Sağ klik menyusu */}

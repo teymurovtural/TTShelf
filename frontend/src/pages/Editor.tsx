@@ -32,6 +32,7 @@ export default function Editor() {
   const [pdfWidth,    setPdfWidth]    = useState(420)
   const [loading,     setLoading]     = useState(true)
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
+  const [isDraggingPdf, setIsDraggingPdf] = useState(false)
 
   const containerRef    = useRef<HTMLDivElement>(null)
   const canvasBoardRef  = useRef<CanvasBoardHandle>(null)
@@ -169,22 +170,44 @@ export default function Editor() {
 
   return (
       <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-white border-b border-gray-200 shrink-0">
+        {/* Header — minimal: geri düyməsi + canvas adı + PDF/Export */}
+        <div className="flex items-center justify-between px-3 py-1.5 bg-white border-b border-gray-200 shrink-0" style={{ minHeight: 44 }}>
           <a
               href="/dashboard"
               className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors shrink-0"
           >
             <ArrowLeft size={17} />
           </a>
-          <Toolbar
-              onExport={handleExport}
-              onTogglePdf={() => setPdfOpen((v) => !v)}
-              pdfOpen={pdfOpen}
-              isDirty={isDirty}
-              canvasTitle={canvasTitle}
-              onTitleChange={handleTitleChange}
+          {/* Canvas adı — ortada */}
+          <input
+              value={canvasTitle}
+              onChange={e => handleTitleChange(e.target.value)}
+              className="text-sm font-medium text-gray-700 bg-transparent border-none outline-none text-center hover:bg-gray-50 rounded px-2 py-0.5 transition-colors"
+              style={{ minWidth: 120, maxWidth: 320 }}
+              placeholder="Canvas adı"
           />
+          {/* Sağ: dirty indicator + PDF + Export */}
+          <div className="flex items-center gap-2 shrink-0">
+            <span className={`text-sm select-none ${isDirty ? 'text-amber-400' : 'text-emerald-400'}`}>
+              {isDirty ? '●' : '✓'}
+            </span>
+            <button
+                onClick={() => setPdfOpen((v) => !v)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all shrink-0 ${
+                    pdfOpen
+                        ? 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+            >
+              <span style={{ fontSize: 14 }}>📖</span> PDF
+            </button>
+            <button
+                onClick={handleExport}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium transition-all shadow-sm shrink-0"
+            >
+              ↓ İxrac
+            </button>
+          </div>
         </div>
 
         {/* Main area */}
@@ -192,6 +215,9 @@ export default function Editor() {
 
           {/* Page sidebar — sol tərəf */}
           {canvasId && <PageSidebar canvasId={canvasId} />}
+
+          {/* Left panel — flex içində, canvas-ı sağa itələyir */}
+          <LeftPanel />
 
           {/* Canvas area */}
           <div
@@ -203,25 +229,47 @@ export default function Editor() {
                     ref={canvasBoardRef}
                     width={containerSize.width}
                     height={containerSize.height}
+                    canvasId={canvasId || ''}
                 />
             )}
-            {/* Sol panel — canvas üzərindən üzür */}
-            <LeftPanel />
+            {/* Toolbar — canvas üzərində float, yuxarı-ortada */}
+            <div style={{
+              position: 'absolute',
+              top: 12,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 30,
+              pointerEvents: 'none',
+            }}>
+              <div style={{ pointerEvents: 'all' }}>
+                <Toolbar
+                    onExport={handleExport}
+                    onTogglePdf={() => setPdfOpen((v) => !v)}
+                    pdfOpen={pdfOpen}
+                    isDirty={isDirty}
+                    canvasTitle={canvasTitle}
+                    onTitleChange={handleTitleChange}
+                />
+              </div>
+            </div>
           </div>
 
           {/* PDF panel */}
           {pdfOpen && pdfUrl && (
               <>
+                {/* Resize handle */}
                 <div
                     onMouseDown={(e) => {
                       e.preventDefault()
+                      setIsDraggingPdf(true)
                       const startX = e.clientX
                       const startW = pdfWidth
                       const onMove = (ev: MouseEvent) => {
                         const delta = startX - ev.clientX
-                        setPdfWidth(Math.max(280, Math.min(800, startW + delta)))
+                        setPdfWidth(Math.max(280, Math.min(900, startW + delta)))
                       }
                       const onUp = () => {
+                        setIsDraggingPdf(false)
                         window.removeEventListener('mousemove', onMove)
                         window.removeEventListener('mouseup', onUp)
                       }
@@ -230,15 +278,24 @@ export default function Editor() {
                     }}
                     style={{
                       width: 5, flexShrink: 0, cursor: 'col-resize',
-                      background: 'transparent',
+                      background: isDraggingPdf ? '#6366f1' : 'transparent',
                       borderLeft: '1px solid #e2e8f0',
-                      position: 'relative',
-                      zIndex: 10,
+                      position: 'relative', zIndex: 10,
+                      transition: 'background 0.15s',
                     }}
                     onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#6366f1'}
-                    onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+                    onMouseLeave={e => {
+                      if (!isDraggingPdf)
+                        (e.currentTarget as HTMLElement).style.background = 'transparent'
+                    }}
                 />
-                <div className="overflow-hidden shrink-0" style={{ width: pdfWidth }}>
+                <div className="relative overflow-hidden shrink-0" style={{ width: pdfWidth }}>
+                  {/* Drag zamanı iframe mouse event-lərini bloklayan overlay */}
+                  {isDraggingPdf && (
+                      <div style={{
+                        position: 'absolute', inset: 0, zIndex: 50, cursor: 'col-resize',
+                      }} />
+                  )}
                   <PDFViewer
                       bookId={bookId || canvas?.book_id || ''}
                       fileUrl={pdfUrl}

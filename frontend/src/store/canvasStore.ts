@@ -8,8 +8,10 @@ interface CanvasState {
     selectedIds: string[]
     tool: ElementType | 'select' | 'pan' | 'eraser'
     isDirty: boolean
+    eraserSize: number
 
     setElements: (elements: CanvasElement[]) => void
+    setEraserSize: (size: number) => void
     addElement: (element: CanvasElement) => void
     updateElement: (id: string, data: Partial<ElementData>) => void
     updateElements: (ids: string[], data: Partial<ElementData>) => void
@@ -40,8 +42,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     selectedIds: [],
     tool: 'select',
     isDirty: false,
+    eraserSize: 20,
     history: [[]],
     historyIndex: 0,
+
+    setEraserSize: (size) => set({ eraserSize: size }),
 
     setElements: (elements) => set({
         elements,

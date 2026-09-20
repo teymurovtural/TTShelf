@@ -24,15 +24,25 @@ type jwtClaims struct {
 func Auth(accessSecret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 1. Authorization header
+			tokenStr := ""
 			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				response.Error(w, apperror.ErrTokenNotFound)
-				return
+			if authHeader != "" {
+				if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+					tokenStr = authHeader[7:]
+				} else {
+					tokenStr = authHeader
+				}
 			}
 
-			tokenStr := authHeader
-			if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-				tokenStr = authHeader[7:]
+			// 2. ?token= query param (iframe üçün)
+			if tokenStr == "" {
+				tokenStr = r.URL.Query().Get("token")
+			}
+
+			if tokenStr == "" {
+				response.Error(w, apperror.ErrTokenNotFound)
+				return
 			}
 
 			token, err := jwt.ParseWithClaims(tokenStr, &jwtClaims{}, func(t *jwt.Token) (interface{}, error) {
