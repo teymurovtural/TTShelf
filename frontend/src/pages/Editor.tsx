@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, BookOpen, FileDown } from 'lucide-react'
 import { canvasApi } from '../api/canvas'
 import { booksApi } from '../api/books'
 import { useCanvasStore } from '../store/canvasStore'
@@ -25,49 +25,38 @@ export default function Editor() {
   const { setCurrentBook }       = useBookStore()
   const { loadPages }            = usePageStore()
 
-  const [canvas,      setCanvas]      = useState<Canvas | null>(null)
-  const [canvasTitle, setCanvasTitle] = useState('')
-  const [pdfOpen,     setPdfOpen]     = useState(false)
-  const [pdfUrl,      setPdfUrl]      = useState('')
-  const [pdfWidth,    setPdfWidth]    = useState(420)
-  const [loading,     setLoading]     = useState(true)
+  const [canvas,        setCanvas]        = useState<Canvas | null>(null)
+  const [canvasTitle,   setCanvasTitle]   = useState('')
+  const [pdfOpen,       setPdfOpen]       = useState(false)
+  const [pdfUrl,        setPdfUrl]        = useState('')
+  const [pdfWidth,      setPdfWidth]      = useState(420)
+  const [loading,       setLoading]       = useState(true)
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
   const [isDraggingPdf, setIsDraggingPdf] = useState(false)
 
-  const containerRef    = useRef<HTMLDivElement>(null)
-  const canvasBoardRef  = useRef<CanvasBoardHandle>(null)
-  const titleSaveTimer  = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const containerRef   = useRef<HTMLDivElement>(null)
+  const canvasBoardRef = useRef<CanvasBoardHandle>(null)
+  const titleSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useAutoSave(canvasId || '')
   useKeyboard()
 
-  // Container ölçüsü — loading, pdfOpen dəyişəndə yenidən qoş
   useEffect(() => {
     if (loading) return
-
     const update = () => {
       if (containerRef.current) {
-        setContainerSize({
-          width:  containerRef.current.offsetWidth,
-          height: containerRef.current.offsetHeight,
-        })
+        setContainerSize({ width: containerRef.current.offsetWidth, height: containerRef.current.offsetHeight })
       }
     }
-
     const raf = requestAnimationFrame(() => {
       update()
       const obs = new ResizeObserver(update)
       if (containerRef.current) obs.observe(containerRef.current)
       ;(containerRef as any)._obs = obs
     })
-
-    return () => {
-      cancelAnimationFrame(raf)
-      ;(containerRef as any)._obs?.disconnect()
-    }
+    return () => { cancelAnimationFrame(raf); (containerRef as any)._obs?.disconnect() }
   }, [loading, pdfOpen])
 
-  // Canvas yüklə + page-ləri yüklə
   useEffect(() => {
     if (!canvasId) return
     const load = async () => {
@@ -76,8 +65,6 @@ export default function Editor() {
         const c = canvasRes.data.data
         setCanvas(c)
         setCanvasTitle(c.title)
-
-        // Page-ləri yüklə (birinci page-in elementlərini də yükləyir)
         await loadPages(canvasId)
       } catch (err) {
         console.error('Canvas yüklənmədi:', err)
@@ -85,10 +72,9 @@ export default function Editor() {
         setLoading(false)
       }
     }
-    load()
+    void load()
   }, [canvasId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Kitab yüklə
   useEffect(() => {
     const loadBook = async (id: string) => {
       try {
@@ -98,8 +84,8 @@ export default function Editor() {
         setPdfOpen(true)
       } catch {}
     }
-    if (bookId) loadBook(bookId)
-    else if (canvas?.book_id) loadBook(canvas.book_id)
+    if (bookId) void loadBook(bookId)
+    else if (canvas?.book_id) void loadBook(canvas.book_id)
   }, [bookId, canvas]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleTitleChange = (title: string) => {
@@ -110,48 +96,28 @@ export default function Editor() {
     }, 1000)
   }
 
-  // PDF export
   const handleExport = async () => {
     if (!canvasId || !canvasBoardRef.current) return
     try {
       const dataUrl = canvasBoardRef.current.exportImage()
-      if (!dataUrl) {
-        alert('Canvas boşdur')
-        return
-      }
-
+      if (!dataUrl) { alert('Canvas boşdur'); return }
       const img = new window.Image()
       img.src = dataUrl
       await new Promise<void>((res) => { img.onload = () => res() })
-
-      const w = img.width  / 2
+      const w = img.width / 2
       const h = img.height / 2
-
-      const pdf = new jsPDF({
-        orientation: w > h ? 'landscape' : 'portrait',
-        unit: 'px',
-        format: [w, h],
-        hotfixes: ['px_scaling'],
-      })
-
+      const pdf = new jsPDF({ orientation: w > h ? 'landscape' : 'portrait', unit: 'px', format: [w, h], hotfixes: ['px_scaling'] })
       pdf.addImage(dataUrl, 'PNG', 0, 0, w, h)
-
       const blob = pdf.output('blob')
-
       try {
-        const res  = await canvasApi.exportPdf(canvasId, blob)
-        const url  = res.data.data.url
-        const a    = document.createElement('a')
-        a.href     = url
-        a.download = `${canvasTitle || 'canvas'}.pdf`
-        a.target   = '_blank'
-        a.click()
+        const res = await canvasApi.exportPdf(canvasId, blob)
+        const url = res.data.data.url
+        const a = document.createElement('a')
+        a.href = url; a.download = `${canvasTitle || 'canvas'}.pdf`; a.target = '_blank'; a.click()
       } catch {
         const url = URL.createObjectURL(blob)
-        const a   = document.createElement('a')
-        a.href     = url
-        a.download = `${canvasTitle || 'canvas'}.pdf`
-        a.click()
+        const a = document.createElement('a')
+        a.href = url; a.download = `${canvasTitle || 'canvas'}.pdf`; a.click()
         setTimeout(() => URL.revokeObjectURL(url), 1000)
       }
     } catch (err) {
@@ -162,68 +128,96 @@ export default function Editor() {
 
   if (loading) {
     return (
-        <div className="min-h-screen bg-white flex items-center justify-center">
-          <div className="text-gray-400 text-sm">Yüklənir...</div>
+        <div style={{ minHeight: '100vh', background: '#0f172a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+            <div style={{ width: 28, height: 28, border: '2.5px solid #334155', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin .7s linear infinite' }} />
+            <span style={{ color: '#475569', fontSize: 13 }}>Yüklənir...</span>
+          </div>
+          <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
         </div>
     )
   }
 
   return (
-      <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
-        {/* Header — minimal: geri düyməsi + canvas adı + PDF/Export */}
-        <div className="flex items-center justify-between px-3 py-1.5 bg-white border-b border-gray-200 shrink-0" style={{ minHeight: 44 }}>
-          <a
-              href="/dashboard"
-              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors shrink-0"
-          >
-            <ArrowLeft size={17} />
-          </a>
-          {/* Canvas adı — ortada */}
-          <input
-              value={canvasTitle}
-              onChange={e => handleTitleChange(e.target.value)}
-              className="text-sm font-medium text-gray-700 bg-transparent border-none outline-none text-center hover:bg-gray-50 rounded px-2 py-0.5 transition-colors"
-              style={{ minWidth: 120, maxWidth: 320 }}
-              placeholder="Canvas adı"
-          />
-          {/* Sağ: dirty indicator + PDF + Export */}
-          <div className="flex items-center gap-2 shrink-0">
-            <span className={`text-sm select-none ${isDirty ? 'text-amber-400' : 'text-emerald-400'}`}>
-              {isDirty ? '●' : '✓'}
-            </span>
-            <button
-                onClick={() => setPdfOpen((v) => !v)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all shrink-0 ${
-                    pdfOpen
-                        ? 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-            >
-              <span style={{ fontSize: 14 }}>📖</span> PDF
+      <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#f1f5f9' }}>
+
+        {/* Header — tünd, minimal */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '0 12px', height: 46,
+          background: '#0f172a', borderBottom: '1px solid #1e293b', flexShrink: 0,
+        }}>
+          {/* Sol: geri + logo + canvas adı */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <a href="/dashboard" style={{
+              width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRadius: 7, color: '#64748b', textDecoration: 'none', flexShrink: 0,
+            }}
+               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#1e293b'; (e.currentTarget as HTMLElement).style.color = '#e2e8f0' }}
+               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.color = '#64748b' }}>
+              <ArrowLeft size={15} />
+            </a>
+
+            <div style={{ width: 1, height: 16, background: '#1e293b', flexShrink: 0 }} />
+
+            <div style={{ width: 22, height: 22, borderRadius: 6, background: '#6366f1', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+              </svg>
+            </div>
+
+            <input
+                value={canvasTitle}
+                onChange={e => handleTitleChange(e.target.value)}
+                style={{
+                  background: 'transparent', color: '#e2e8f0', fontSize: 13, fontWeight: 600,
+                  border: 'none', borderBottom: '1.5px solid transparent', outline: 'none',
+                  padding: '2px 4px', transition: 'border-color .15s', minWidth: 120, maxWidth: 260,
+                }}
+                onFocus={e => e.target.style.borderBottomColor = '#6366f1'}
+                onBlur={e => e.target.style.borderBottomColor = 'transparent'}
+                placeholder="Canvas adı"
+            />
+
+            <span style={{ fontSize: 16, color: isDirty ? '#f59e0b' : '#334155', lineHeight: 1 }}
+                  title={isDirty ? 'Saxlanmamış dəyişikliklər' : 'Saxlanıldı'}>
+            {isDirty ? '●' : '✓'}
+          </span>
+          </div>
+
+          {/* Sağ: PDF + İxrac */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button onClick={() => setPdfOpen(v => !v)} style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px', height: 28,
+              borderRadius: 7, fontSize: 12, fontWeight: 500, border: 'none', cursor: 'pointer',
+              background: pdfOpen ? '#6366f1' : '#1e293b', color: pdfOpen ? 'white' : '#94a3b8',
+              transition: 'all .12s',
+            }}>
+              <BookOpen size={13} /> PDF
             </button>
-            <button
-                onClick={handleExport}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium transition-all shadow-sm shrink-0"
-            >
-              ↓ İxrac
+            <button onClick={handleExport} style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px', height: 28,
+              borderRadius: 7, fontSize: 12, fontWeight: 500, border: 'none', cursor: 'pointer',
+              background: '#10b981', color: 'white', transition: 'all .12s',
+            }}
+                    onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#059669'}
+                    onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#10b981'}>
+              <FileDown size={13} /> İxrac
             </button>
           </div>
         </div>
 
         {/* Main area */}
-        <div className="flex flex-1 overflow-hidden">
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
 
           {/* Page sidebar — sol tərəf */}
           {canvasId && <PageSidebar canvasId={canvasId} />}
 
-          {/* Left panel — flex içində, canvas-ı sağa itələyir */}
+          {/* LeftPanel (Properties) */}
           <LeftPanel />
 
           {/* Canvas area */}
-          <div
-              ref={containerRef}
-              className="flex-1 overflow-hidden relative"
-          >
+          <div ref={containerRef} style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
             {containerSize.width > 0 && (
                 <CanvasBoard
                     ref={canvasBoardRef}
@@ -232,19 +226,16 @@ export default function Editor() {
                     canvasId={canvasId || ''}
                 />
             )}
+
             {/* Toolbar — canvas üzərində float, yuxarı-ortada */}
             <div style={{
-              position: 'absolute',
-              top: 12,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              zIndex: 30,
-              pointerEvents: 'none',
+              position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 30, pointerEvents: 'none',
             }}>
               <div style={{ pointerEvents: 'all' }}>
                 <Toolbar
                     onExport={handleExport}
-                    onTogglePdf={() => setPdfOpen((v) => !v)}
+                    onTogglePdf={() => setPdfOpen(v => !v)}
                     pdfOpen={pdfOpen}
                     isDirty={isDirty}
                     canvasTitle={canvasTitle}
@@ -259,62 +250,43 @@ export default function Editor() {
               <>
                 {/* Resize handle */}
                 <div
-                    onMouseDown={(e) => {
+                    onMouseDown={e => {
                       e.preventDefault()
                       setIsDraggingPdf(true)
                       const startX = e.clientX
                       const startW = pdfWidth
-                      const onMove = (ev: MouseEvent) => {
-                        const delta = startX - ev.clientX
-                        setPdfWidth(Math.max(280, Math.min(900, startW + delta)))
-                      }
-                      const onUp = () => {
-                        setIsDraggingPdf(false)
-                        window.removeEventListener('mousemove', onMove)
-                        window.removeEventListener('mouseup', onUp)
-                      }
+                      const onMove = (ev: MouseEvent) => setPdfWidth(Math.max(280, Math.min(900, startW + (startX - ev.clientX))))
+                      const onUp = () => { setIsDraggingPdf(false); window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
                       window.addEventListener('mousemove', onMove)
                       window.addEventListener('mouseup', onUp)
                     }}
                     style={{
                       width: 5, flexShrink: 0, cursor: 'col-resize',
                       background: isDraggingPdf ? '#6366f1' : 'transparent',
-                      borderLeft: '1px solid #e2e8f0',
-                      position: 'relative', zIndex: 10,
+                      borderLeft: '1px solid #e2e8f0', position: 'relative', zIndex: 10,
                       transition: 'background 0.15s',
                     }}
                     onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#6366f1'}
-                    onMouseLeave={e => {
-                      if (!isDraggingPdf)
-                        (e.currentTarget as HTMLElement).style.background = 'transparent'
-                    }}
+                    onMouseLeave={e => { if (!isDraggingPdf) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
                 />
-                <div className="relative overflow-hidden shrink-0" style={{ width: pdfWidth }}>
-                  {/* Drag zamanı iframe mouse event-lərini bloklayan overlay */}
-                  {isDraggingPdf && (
-                      <div style={{
-                        position: 'absolute', inset: 0, zIndex: 50, cursor: 'col-resize',
-                      }} />
-                  )}
-                  <PDFViewer
-                      bookId={bookId || canvas?.book_id || ''}
-                      fileUrl={pdfUrl}
-                  />
+                <div style={{ position: 'relative', overflow: 'hidden', flexShrink: 0, width: pdfWidth }}>
+                  {isDraggingPdf && <div style={{ position: 'absolute', inset: 0, zIndex: 50, cursor: 'col-resize' }} />}
+                  <PDFViewer bookId={bookId || canvas?.book_id || ''} fileUrl={pdfUrl} />
                 </div>
               </>
           )}
 
           {pdfOpen && !pdfUrl && (
-              <div className="border-l border-gray-200 flex items-center justify-center bg-gray-50 shrink-0" style={{ width: 420 }}>
-                <div className="text-center text-gray-400 p-6">
-                  <p className="text-sm mb-3">Kitab seçilməyib</p>
-                  <a href="/dashboard" className="text-indigo-500 hover:text-indigo-600 text-sm">
-                    Dashboard-dan kitab seç
-                  </a>
+              <div style={{ width: 420, borderLeft: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', flexShrink: 0 }}>
+                <div style={{ textAlign: 'center', color: '#94a3b8', padding: 24 }}>
+                  <p style={{ fontSize: 13, marginBottom: 12 }}>Kitab seçilməyib</p>
+                  <a href="/dashboard" style={{ color: '#6366f1', fontSize: 13, textDecoration: 'none' }}>Dashboard-dan kitab seç</a>
                 </div>
               </div>
           )}
         </div>
+
+        <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       </div>
   )
 }

@@ -219,7 +219,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       } = useCanvasStore()
 
       // Aktiv page-in orientasiyasına görə A4 ölçüsü
-      const { pages, activePageId, switchPage, createPage, deletePage } = usePageStore()
+      const { pages, activePageId, switchPage, createPage, deletePage, allPageElements } = usePageStore()
       const activePage = pages.find(p => p.id === activePageId)
       const isLandscape = activePage?.orientation === 'landscape'
       const A4_W = isLandscape ? A4_H_PT : A4_W_PT
@@ -1384,9 +1384,9 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           <div
               className="relative w-full h-full overflow-hidden"
               style={{
-                background: '#f1f5f9',
-                backgroundImage: `radial-gradient(circle, #94a3b8 1px, transparent 1px)`,
-                backgroundSize: `${20 * stageScale}px ${20 * stageScale}px`,
+                background: '#edf0f5',
+                backgroundImage: `linear-gradient(rgba(148,163,184,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.15) 1px, transparent 1px)`,
+                backgroundSize: `${40 * stageScale}px ${40 * stageScale}px`,
                 backgroundPosition: `${stagePos.x}px ${stagePos.y}px`,
               }}
           >
@@ -1427,6 +1427,18 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
               </Layer>
 
               <Layer>
+                {/* Aktiv olmayan page-lərin elementləri — solğun, seçilə bilməz */}
+                {pages.map((page) => {
+                  if (page.id === activePageId) return null
+                  const els = allPageElements[page.id] || []
+                  if (els.length === 0) return null
+                  return (
+                      <Group key={`ghost-${page.id}`} opacity={0.35} listening={false}>
+                        {[...els].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map((el) => renderElement(el))}
+                      </Group>
+                  )
+                })}
+                {/* Aktiv page-in elementləri */}
                 {[...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map((el) => renderElement(el))}
                 {selBox && selBox.w > 2 && (
                     <Rect
@@ -1529,29 +1541,44 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                 onClick={handleAddPage}
                 style={{
                   position: 'absolute',
-                  left: addBtnScreen.x + 24,
-                  top:  addBtnScreen.y - 16,
-                  width: 32, height: 32,
-                  borderRadius: '50%',
-                  background: '#6366f1',
-                  color: 'white',
-                  fontSize: 20,
-                  lineHeight: '30px',
-                  textAlign: 'center',
+                  left: addBtnScreen.x + 20,
+                  top:  addBtnScreen.y - 14,
+                  width: 28, height: 28,
+                  borderRadius: 8,
+                  background: 'rgba(30,41,59,0.85)',
+                  backdropFilter: 'blur(8px)',
+                  color: '#94a3b8',
+                  fontSize: 18,
+                  fontWeight: 300,
                   cursor: 'pointer',
-                  border: 'none',
-                  boxShadow: '0 2px 8px rgba(99,102,241,0.4)',
+                  border: '1px solid rgba(99,102,241,0.3)',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
                   zIndex: 10,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  transition: 'transform 0.15s, box-shadow 0.15s',
+                  transition: 'all 0.15s',
+                  lineHeight: 1,
                 }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'scale(1.12)'; (e.currentTarget as HTMLElement).style.boxShadow = '0 4px 14px rgba(99,102,241,0.5)' }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'scale(1)';    (e.currentTarget as HTMLElement).style.boxShadow = '0 2px 8px rgba(99,102,241,0.4)' }}
-                title="Yeni səhifə"
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLElement
+                  el.style.background = '#6366f1'
+                  el.style.color = 'white'
+                  el.style.borderColor = '#6366f1'
+                  el.style.boxShadow = '0 4px 12px rgba(99,102,241,0.4)'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLElement
+                  el.style.background = 'rgba(30,41,59,0.85)'
+                  el.style.color = '#94a3b8'
+                  el.style.borderColor = 'rgba(99,102,241,0.3)'
+                  el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)'
+                }}
+                title="Yeni səhifə əlavə et"
             >
-              +
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
             </button>
 
             {editingId && editingEl && (

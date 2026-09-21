@@ -58,7 +58,7 @@ export default function Toolbar({
     const {
         tool, setTool, selectedIds, deleteSelected, undo, redo,
         groupSelected, ungroupSelected, addElement, setElements,
-        eraserSize, setEraserSize,
+        eraserSize, setEraserSize, elements, updateElement,
     } = useCanvasStore()
 
     const imageInputRef = useRef<HTMLInputElement>(null)
@@ -128,10 +128,13 @@ export default function Toolbar({
                     </Tip>
                     {shapeOpen && (
                         <div
-                            className="shape-dropdown fixed"
+                            className="shape-dropdown"
                             style={{
-                                top: (shapeRef.current?.getBoundingClientRect().bottom ?? 0) + 6,
-                                left: shapeRef.current?.getBoundingClientRect().left ?? 0,
+                                position: 'absolute',
+                                top: '100%',
+                                left: '50%',
+                                transform: 'translateX(-50%)',
+                                marginTop: 6,
                             }}
                         >
                             {SHAPE_TOOLS.map((s) => (
@@ -182,6 +185,35 @@ export default function Toolbar({
                         <div className="ftoolbar-divider" />
                     </>
                 )}
+
+                {/* Dash slider */}
+                {selectedIds.length === 1 && (() => {
+                    const el = elements.find(e => e.id === selectedIds[0])
+                    if (!el || !['line','arrow','freehand'].includes(el.type)) return null
+                    const dashVal = el.data.dash ? el.data.dash[0] : 0
+                    const gapVal  = el.data.dash ? el.data.dash[1] : 0
+                    return (
+                        <>
+                            <div className="ftoolbar-divider" />
+                            <div style={{ display:"flex", flexDirection:"column", gap:4, padding:"0 6px", minWidth:130 }}>
+                                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                                    <span style={{ fontSize:10, color:"#9090b0", minWidth:28 }}>Xətt</span>
+                                    <input type="range" min={0} max={40} step={1} value={dashVal}
+                                           onChange={e => { const v=Number(e.target.value); updateElement(el.id, { dash: v===0 ? undefined : [v, gapVal||v] } as any) }}
+                                           style={{ flex:1, accentColor:"#6366f1", height:3, cursor:"pointer" }} />
+                                    <span style={{ fontSize:10, color:"#9090b0", minWidth:20, textAlign:"right" }}>{dashVal}</span>
+                                </div>
+                                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                                    <span style={{ fontSize:10, color:"#9090b0", minWidth:28 }}>Boşluq</span>
+                                    <input type="range" min={0} max={40} step={1} value={gapVal}
+                                           onChange={e => { const v=Number(e.target.value); updateElement(el.id, { dash: dashVal===0 ? undefined : [dashVal, v] } as any) }}
+                                           style={{ flex:1, accentColor:"#6366f1", height:3, cursor:"pointer" }} />
+                                    <span style={{ fontSize:10, color:"#9090b0", minWidth:20, textAlign:"right" }}>{gapVal}</span>
+                                </div>
+                            </div>
+                        </>
+                    )
+                })()}
 
                 {/* Undo / Redo */}
                 <Tip label="Geri al (Ctrl+Z)">

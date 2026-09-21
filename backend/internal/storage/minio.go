@@ -39,6 +39,20 @@ func NewMinioClient(cfg *config.MinioConfig) (*MinioClient, error) {
 		log.Printf("Bucket '%s' created", cfg.BucketName)
 	}
 
+	policy := fmt.Sprintf(`{
+		"Version":"2012-10-17",
+		"Statement":[{
+			"Effect":"Allow",
+			"Principal":{"AWS":["*"]},
+			"Action":["s3:GetObject"],
+			"Resource":["arn:aws:s3:::%s/*"]
+		}]
+	}`, cfg.BucketName)
+
+	if err := client.SetBucketPolicy(ctx, cfg.BucketName, policy); err != nil {
+		return nil, fmt.Errorf("failed to set bucket policy: %w", err)
+	}
+
 	log.Println("MinIO connected successfully")
 
 	return &MinioClient{

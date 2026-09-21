@@ -210,6 +210,29 @@ export default function PropertiesPanel() {
                     </Section>
                 )}
 
+                {/* Dash sıxlığı — yalnız däsh/dotted seçiləndə */}
+                {(isShape || isLine) && currentStyleId !== 'solid' && (() => {
+                    const dash = d.dash || [8, 4]
+                    const density = dash[0]
+                    return (
+                        <Section title="ؚətt sıxlığı">
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 10, color: "#7070a0" }}>Az</span>
+                                <input type="range" min={1} max={20} step={1}
+                                       value={density}
+                                       onChange={e => {
+                                           const v = Number(e.target.value)
+                                           const gap = currentStyleId === 'dotted' ? Math.max(2, v * 2) : Math.max(2, v)
+                                           update({ dash: [v, gap] })
+                                       }}
+                                       style={{ flex: 1, accentColor: "#6366f1" }}
+                                />
+                                <span style={{ fontSize: 10, color: "#7070a0" }}>Cox</span>
+                            </div>
+                        </Section>
+                    )
+                })()}
+
                 {/* Kontur qalınlığı */}
                 {(isShape || isLine) && (
                     <Section title="Kontur qalınlığı">
@@ -232,6 +255,32 @@ export default function PropertiesPanel() {
                         </div>
                     </Section>
                 )}
+
+                {/* Xətt / Boşluq slider */}
+                {isLine && (() => {
+                    const dashVal = d.dash ? d.dash[0] : 0
+                    const gapVal  = d.dash ? d.dash[1] : 0
+                    return (
+                        <Section title="Xətt / Boşluq">
+                            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                                    <span style={{ fontSize:10, color:"#7070a0", minWidth:36 }}>Xətt</span>
+                                    <input type="range" min={0} max={40} step={1} value={dashVal}
+                                           onChange={e => { const v=Number(e.target.value); update({ dash: v===0 ? undefined : [v, gapVal||v] } as any) }}
+                                           style={{ flex:1, accentColor:"#6366f1" }} />
+                                    <span style={{ fontSize:10, color:"#7070a0", minWidth:20, textAlign:"right" }}>{dashVal}</span>
+                                </div>
+                                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                                    <span style={{ fontSize:10, color:"#7070a0", minWidth:36 }}>Boşluq</span>
+                                    <input type="range" min={0} max={40} step={1} value={gapVal}
+                                           onChange={e => { const v=Number(e.target.value); update({ dash: dashVal===0 ? undefined : [dashVal, v] } as any) }}
+                                           style={{ flex:1, accentColor:"#6366f1" }} />
+                                    <span style={{ fontSize:10, color:"#7070a0", minWidth:20, textAlign:"right" }}>{gapVal}</span>
+                                </div>
+                            </div>
+                        </Section>
+                    )
+                })()}
 
                 {/* Şəffaflıq */}
                 {!isImage && (

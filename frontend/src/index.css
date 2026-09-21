@@ -124,7 +124,7 @@ body {
 .tooltip-container { position: relative; }
 .tooltip-container .tooltip {
   position: absolute;
-  bottom: calc(100% + 8px);
+  top: calc(100% + 8px);
   left: 50%;
   transform: translateX(-50%);
   background: rgba(15,23,42,0.9);
