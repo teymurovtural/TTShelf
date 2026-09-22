@@ -7,6 +7,7 @@ import {
 import { useCanvasStore } from '../../store/canvasStore'
 import { usePageStore } from '../../store/pageStore'
 import { uploadApi } from '../../api/upload'
+import { pagesApi } from '../../api/pages'
 import type { CanvasElement, ElementData, TextRun } from '../../types'
 import { v4 as uuidv4 } from 'uuid'
 import RichTextShape, { isAreaText, textBox } from './RichTextShape'
@@ -81,6 +82,7 @@ type ShapeProps = {
   id: string
   draggable: boolean
   opacity: number
+  listening: boolean
   onClick: (e: Konva.KonvaEventObject<MouseEvent>) => void
   onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => void
   onDragStart: () => void
@@ -185,11 +187,20 @@ function checkBend(pts: number[]): boolean {
 }
 
 // A4 ölçüləri @ 96 dpi
-const A4_W_PT = 794
-const A4_H_PT = 1123
+export const A4_W_PT = 794
+export const A4_H_PT = 1123
+
+// Çox-səhifəli grid: 3 sütun, hər A4 arasında GAP boşluq (canvas koordinatında)
+export const GRID_COLS = 3
+export const GRID_PAGE_GAP = 40
 
 interface CanvasBoardProps { width: number; height: number; canvasId: string }
-export interface CanvasBoardHandle { exportImage: () => string | null }
+export interface CanvasBoardHandle {
+  exportImage: () => string | null
+  exportAllPages: () => Promise<Array<{ dataUrl: string; w: number; h: number }>>
+  // Stage-in görünən mərkəzini stage koordinatında qaytarır (image drop üçün)
+  getViewCenter: () => { x: number; y: number }
+}
 
 const SHAPE_DEFAULTS = {
   rect:          { fill: '#dbeafe', stroke: '#3b82f6', strokeWidth: 2 },
@@ -215,15 +226,36 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         elements, tool, selectedIds,
         addElement, updateElement, deleteSelected, deleteElement,
         setSelectedIds, setTool, pushHistory,
-        eraserSize,
+        eraserSize, setElementPageId,
       } = useCanvasStore()
 
       // Aktiv page-in orientasiyasına görə A4 ölçüsü
-      const { pages, activePageId, switchPage, createPage, deletePage, allPageElements } = usePageStore()
+      const { pages, activePageId, switchPage, createPage, deletePage } = usePageStore()
       const activePage = pages.find(p => p.id === activePageId)
       const isLandscape = activePage?.orientation === 'landscape'
       const A4_W = isLandscape ? A4_H_PT : A4_W_PT
       const A4_H = isLandscape ? A4_W_PT : A4_H_PT
+
+      // Verilmiş canvas koordinatı hansı page-in A4 sahəsinin üstündədirsə,
+      // onun id-sini qaytarır. Heç birinin üstündə deyilsə undefined.
+      // Sürüklənən elementin son mövqeyinə görə page_id-ni doğru təyin etmək üçün istifadə olunur —
+      // əvvəllər element hara sürüklənirsə sürüklənsin, yaradıldığı (activePageId) page-ə "yapışıb" qalırdı.
+      const getPageIdAtPoint = useCallback((x: number, y: number): string | undefined => {
+        for (let i = pages.length - 1; i >= 0; i--) {
+          const page = pages[i]
+          const col = i % GRID_COLS
+          const row = Math.floor(i / GRID_COLS)
+          const ppos = { x: col * (A4_W_PT + GRID_PAGE_GAP), y: row * (A4_H_PT + GRID_PAGE_GAP) }
+          const size = {
+            w: page.orientation === 'landscape' ? A4_H_PT : A4_W_PT,
+            h: page.orientation === 'landscape' ? A4_W_PT : A4_H_PT,
+          }
+          if (x >= ppos.x && x <= ppos.x + size.w && y >= ppos.y && y <= ppos.y + size.h) {
+            return page.id
+          }
+        }
+        return undefined
+      }, [pages])
 
       const stageRef       = useRef<Konva.Stage>(null)
       const transformerRef = useRef<Konva.Transformer>(null)
@@ -289,6 +321,19 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
       // Export — yalnız A4 sahəsini çıxar
       useImperativeHandle(ref, () => ({
+        // Stage-in görünən mərkəzini stage koordinatında qaytarır
+        // Məntiq: ekran mərkəzi → stage koordinatına çevir
+        getViewCenter: () => {
+          const stage = stageRef.current
+          if (!stage) return { x: 400, y: 400 }
+          const cx = width  / 2
+          const cy = height / 2
+          return {
+            x: (cx - stagePosRef.current.x) / stageScaleRef.current,
+            y: (cy - stagePosRef.current.y) / stageScaleRef.current,
+          }
+        },
+
         exportImage: () => {
           if (!stageRef.current) return null
           const tr = transformerRef.current
@@ -304,7 +349,207 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           tr?.show(); stageRef.current.batchDraw()
           return dataUrl
         },
-      }))
+
+        // Bütün page-ləri off-screen Konva stage-də render edib PNG array qaytarır
+        exportAllPages: async () => {
+          const results: Array<{ dataUrl: string; w: number; h: number }> = []
+
+          const COLS = GRID_COLS
+          const PAGE_GAP = GRID_PAGE_GAP
+
+          // Render zamanı ilə eyni offset hesabı — hər page öz ölçüsünü nəzərə alır
+          // pagePositions[i] = render-dəki pagePositions ilə eyni olmalıdır
+          // Render: col * (A4_W_PT + GAP), row * (A4_H_PT + GAP) — portrait bazasında
+          // (landscape olsa da render eyni formuldan istifadə edir)
+          const getExportOffset = (idx: number) => {
+            const col = idx % COLS
+            const row = Math.floor(idx / COLS)
+            return {
+              x: col * (A4_W_PT + PAGE_GAP),
+              y: row * (A4_H_PT + PAGE_GAP),
+            }
+          }
+
+          for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+            const page = pages[pageIdx]
+            const isLand = page.orientation === 'landscape'
+            const pw = isLand ? A4_H_PT : A4_W_PT
+            const ph = isLand ? A4_W_PT : A4_H_PT
+
+            // Bu page-in canvas-dakı offset-i (render ilə eyni formula)
+            const { x: offsetX, y: offsetY } = getExportOffset(pageIdx)
+
+            // canvasStore-dan bu page-ə aid elementləri götür
+            const allEls = useCanvasStore.getState().elements
+            const pageEls = allEls.filter(el => el.page_id === page.id)
+
+            // Off-screen container
+            const container = document.createElement('div')
+            container.style.cssText = 'position:absolute;left:-99999px;top:-99999px;width:0;height:0;overflow:hidden'
+            document.body.appendChild(container)
+
+            const offStage = new Konva.Stage({
+              container,
+              width: pw,
+              height: ph,
+            })
+            const layer = new Konva.Layer()
+            offStage.add(layer)
+
+            // Ağ A4 fonu
+            layer.add(new Konva.Rect({ x: 0, y: 0, width: pw, height: ph, fill: '#ffffff' }))
+
+            const sorted = [...pageEls].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
+
+            for (const el of sorted) {
+              const d = el.data as Record<string, unknown>
+              const baseAttrs = {
+                x:        ((d.x as number) ?? 0) - offsetX,
+                y:        ((d.y as number) ?? 0) - offsetY,
+                rotation: (d.rotation as number) ?? 0,
+                opacity:  (d.opacity as number) ?? 1,
+              }
+
+              if (el.type === 'rect' || el.type === 'circle') {
+                const cr = (d.cornerRadius as number) ?? (el.type === 'circle' ? 99999 : 0)
+                layer.add(new Konva.Rect({
+                  ...baseAttrs,
+                  width:        Math.abs((d.width as number) ?? 0),
+                  height:       Math.abs((d.height as number) ?? 0),
+                  fill:         (d.fill as string) ?? 'transparent',
+                  stroke:       (d.stroke as string) ?? 'transparent',
+                  strokeWidth:  (d.strokeWidth as number) ?? 1,
+                  dash:         (d.dash as number[]) ?? [],
+                  cornerRadius: cr,
+                }))
+              } else if (el.type === 'line' || el.type === 'freehand') {
+                const rawPts = (d.points as number[]) ?? []
+                const adjPts = rawPts.map((v, i) => i % 2 === 0 ? v - offsetX : v - offsetY)
+                layer.add(new Konva.Line({
+                  x: 0, y: 0, rotation: (d.rotation as number) ?? 0, opacity: (d.opacity as number) ?? 1,
+                  points:      adjPts,
+                  stroke:      (d.stroke as string) ?? '#374151',
+                  strokeWidth: (d.strokeWidth as number) ?? 2,
+                  tension:     0.5,
+                  lineCap:     'round',
+                  lineJoin:    'round',
+                  dash:        (d.dash as number[]) ?? [],
+                }))
+              } else if (el.type === 'arrow') {
+                const rawArrPts = (d.points as number[]) ?? []
+                const adjArrPts = rawArrPts.map((v, i) => i % 2 === 0 ? v - offsetX : v - offsetY)
+                layer.add(new Konva.Arrow({
+                  x: 0, y: 0, rotation: (d.rotation as number) ?? 0, opacity: (d.opacity as number) ?? 1,
+                  points:        adjArrPts,
+                  stroke:        (d.stroke as string) ?? '#6d28d9',
+                  strokeWidth:   (d.strokeWidth as number) ?? 2,
+                  fill:          (d.stroke as string) ?? '#6d28d9',
+                  pointerLength: Math.max(12, ((d.strokeWidth as number) ?? 2) * 5),
+                  pointerWidth:  Math.max(10, ((d.strokeWidth as number) ?? 2) * 4),
+                  tension:       0,
+                  lineCap:       'round',
+                  lineJoin:      'round',
+                  dash:          (d.dash as number[]) ?? [],
+                }))
+              } else if (el.type === 'triangle' || el.type === 'pentagon' || el.type === 'hexagon' ||
+                  el.type === 'star' || el.type === 'diamond' || el.type === 'parallelogram' ||
+                  el.type === 'cross' || el.type === 'cylinder') {
+                // Path shape-lər: fill + stroke rectangle kimi fallback
+                layer.add(new Konva.Rect({
+                  ...baseAttrs,
+                  width:       Math.abs((d.width as number) ?? 0),
+                  height:      Math.abs((d.height as number) ?? 0),
+                  fill:        (d.fill as string) ?? 'transparent',
+                  stroke:      (d.stroke as string) ?? 'transparent',
+                  strokeWidth: (d.strokeWidth as number) ?? 1,
+                }))
+              } else if (el.type === 'text') {
+                // Rich text: runs-lardan plain text çıxar, Konva.Text ilə render et
+                const runs = (d.runs as unknown[]) ?? []
+                type RunLike = { text?: string; fontSize?: number; bold?: boolean; italic?: boolean; color?: string; fontFamily?: string }
+                let plainText = ''
+                let firstFontSize = (d.fontSize as number) ?? 20
+                let firstColor = (d.fill as string) ?? '#0f172a'
+                let firstFont = (d.fontFamily as string) ?? 'Arial'
+                if (runs.length > 0) {
+                  const r0 = runs[0] as RunLike
+                  firstFontSize = r0.fontSize ?? firstFontSize
+                  firstColor = r0.color ?? firstColor
+                  firstFont = r0.fontFamily ?? firstFont
+                  plainText = (runs as RunLike[]).map(r => r.text ?? '').join('')
+                } else {
+                  plainText = (d.text as string) ?? ''
+                }
+                layer.add(new Konva.Text({
+                  ...baseAttrs,
+                  text:        plainText,
+                  fontSize:    firstFontSize,
+                  fontFamily:  firstFont,
+                  fill:        firstColor,
+                  width:       (d.width as number) ?? undefined,
+                  wrap:        'word',
+                  align:       (d.align as string) ?? 'left',
+                }))
+              } else if (el.type === 'image') {
+                // Şəkil: fetch → blob URL → Image
+                // crossOrigin='anonymous' + birbaşa URL CORS taint problemi yaradır.
+                // fetch ilə yükləyib blob URL yaratmaq həm CORS-u həll edir,
+                // həm də canvas.toDataURL()-nin "tainted canvas" xətasını önləyir.
+                const src = (d.src as string) ?? ''
+                if (src) {
+                  await new Promise<void>(async (resolve) => {
+                    try {
+                      const response = await fetch(src, { mode: 'cors', credentials: 'omit' })
+                      const blob = await response.blob()
+                      const blobUrl = URL.createObjectURL(blob)
+                      const img = new window.Image()
+                      img.onload = () => {
+                        layer.add(new Konva.Image({
+                          ...baseAttrs,
+                          image:  img,
+                          width:  (d.width as number) ?? img.width,
+                          height: (d.height as number) ?? img.height,
+                        }))
+                        URL.revokeObjectURL(blobUrl)
+                        resolve()
+                      }
+                      img.onerror = () => { URL.revokeObjectURL(blobUrl); resolve() }
+                      img.src = blobUrl
+                    } catch {
+                      // fetch uğursuz olsa crossOrigin ilə fallback cəhd et
+                      const img = new window.Image()
+                      img.crossOrigin = 'anonymous'
+                      img.onload  = () => { layer.add(new Konva.Image({ ...baseAttrs, image: img, width: (d.width as number) ?? img.width, height: (d.height as number) ?? img.height })); resolve() }
+                      img.onerror = () => resolve()
+                      img.src = src
+                    }
+                  })
+                }
+              }
+            }
+
+            // Debug: page elementlərini log et
+            console.log(`[Export] page[${pageIdx}] id=${page.id} offset=(${offsetX},${offsetY}) elements=${pageEls.length}`)
+            pageEls.forEach(el => {
+              const d = el.data as Record<string, unknown>
+              console.log(`  el type=${el.type} x=${d.x} y=${d.y} → adjusted=(${(d.x as number ?? 0) - offsetX}, ${(d.y as number ?? 0) - offsetY})`)
+            })
+
+            // Konva render pipeline-ı tamamlasın deyə əvvəlcə draw() çağır,
+            // sonra bir microtask gözlə — bu xüsusilə image elementlər üçün vacibdir
+            layer.draw()
+            await new Promise<void>(resolve => setTimeout(resolve, 0))
+
+            const dataUrl = offStage.toDataURL({ pixelRatio: 2, mimeType: 'image/png' })
+            results.push({ dataUrl, w: pw, h: ph })
+
+            offStage.destroy()
+            document.body.removeChild(container)
+          }
+
+          return results
+        },
+      }), [pages, elements, A4_W, A4_H])
 
       // Transformer — YALNIZ tək element seçiləndə işlət
       // Çoxlu seçimdə Transformer.nodes([]) — viewport-u tərpətməsin
@@ -423,9 +668,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                 const img = new window.Image()
                 img.src = url
                 img.onload = () => {
+                  // Şəkli stage-in görünən mərkəzinə yerləşdir
+                  const cx = width  / 2
+                  const cy = height / 2
+                  const stageX = (cx - stagePosRef.current.x) / stageScaleRef.current
+                  const stageY = (cy - stagePosRef.current.y) / stageScaleRef.current
+                  const w = Math.min(img.width  / 2, 600)
+                  const h = Math.min(img.height / 2, 600)
                   addElement({
-                    id: uuidv4(), canvas_id: '', type: 'image',
-                    data: { x: 100, y: 100, width: Math.min(img.width / 2, 600), height: Math.min(img.height / 2, 600), src: url },
+                    id: uuidv4(), canvas_id: '', page_id: getPageIdAtPoint(stageX, stageY) ?? activePageId ?? '', type: 'image',
+                    data: { x: stageX - w / 2, y: stageY - h / 2, width: w, height: h, src: url },
                     z_index: elements.length,
                     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
                   })
@@ -436,7 +688,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         }
         window.addEventListener('paste', handlePaste)
         return () => window.removeEventListener('paste', handlePaste)
-      }, [editingId, elements.length, addElement])
+      }, [editingId, elements.length, addElement, activePageId, getPageIdAtPoint])
 
       // Zoom
       const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
@@ -568,6 +820,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
             addElement({
               id: uuidv4(),
               canvas_id: '',
+              page_id: activePageId || '',
               type: 'freehand',
               data: { ...el.data, points: seg },
               z_index: el.z_index,
@@ -623,6 +876,17 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
             selStart.current = pos
             selBoxRef.current = { x: pos.x, y: pos.y, w: 0, h: 0 }
             setSelBox({ x: pos.x, y: pos.y, w: 0, h: 0 })
+
+            // Heç bir page-in içindəyiksə activePageId-i sıfırla
+            const insidePage = pages.some((page, idx) => {
+              const ppos = pagePositions[idx]
+              const size = getPageSize(page)
+              return pos.x >= ppos.x && pos.x <= ppos.x + size.w &&
+                  pos.y >= ppos.y && pos.y <= ppos.y + size.h
+            })
+            if (!insidePage) {
+              usePageStore.getState().setActivePageId(null as unknown as string)
+            }
           }
           return
         }
@@ -665,7 +929,16 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
           }
         }
 
-        addElement({ id, canvas_id: '', type: tool, data, z_index: elements.length, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        // activePageId null olanda element əlavə etmə — əvvəlcə bir page seçilməlidir
+        if (!activePageId) {
+          // Birinci page-i avtomatik aktiv et
+          if (pages.length > 0) {
+            switchPage(canvasId, pages[0].id)
+          }
+          return
+        }
+
+        addElement({ id, canvas_id: '', page_id: getPageIdAtPoint(pos.x, pos.y) ?? activePageId, type: tool, data, z_index: elements.length, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       }
 
       const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -839,6 +1112,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       // Element bounding box — sol yuxarı künc + ölçü
       const handleDragEnd = useCallback((id: string, e: Konva.KonvaEventObject<DragEvent>) => {
         pushHistory()
+
+        // Sürüklənmə bitəndə elementin son mərkəzi hansı A4-ün üstündədirsə,
+        // page_id-ni ona köçürür — beləliklə element vizual olaraq harda görünürsə,
+        // export də (və digər səhifə-əsaslı filtrlər) elə ora aid sayır.
+        const reassignPageIfMoved = (el: CanvasElement, mergedData: Record<string, unknown>) => {
+          const bbox = getElBBox({ ...el, data: { ...el.data, ...mergedData } } as CanvasElement)
+          const cx = bbox.x + bbox.w / 2
+          const cy = bbox.y + bbox.h / 2
+          const newPageId = getPageIdAtPoint(cx, cy)
+          if (newPageId && newPageId !== el.page_id) {
+            setElementPageId(el.id, newPageId)
+          }
+        }
+
         if (isDraggingGroup.current && selectedIds.length > 1 && selectedIds.includes(id)) {
           const newX = e.target.x()
           const newY = e.target.y()
@@ -848,7 +1135,11 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
             const dy = newY - startPos.y
             selectedIds.forEach((sid) => {
               const sp = dragStartPositions.current[sid]
-              if (sp) updateElement(sid, { x: sp.x + dx, y: sp.y + dy })
+              if (!sp) return
+              const newData = { x: sp.x + dx, y: sp.y + dy }
+              updateElement(sid, newData)
+              const elSid = elementsRef.current.find((e) => e.id === sid)
+              if (elSid) reassignPageIfMoved(elSid, newData)
             })
           }
           isDraggingGroup.current = false
@@ -858,16 +1149,17 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
             const nx = e.target.x()
             const ny = e.target.y()
             const pts = el.data.points || []
-            updateElement(id, {
-              x: 0, y: 0,
-              points: pts.map((v, i) => i % 2 === 0 ? v + nx : v + ny),
-            })
+            const newData = { x: 0, y: 0, points: pts.map((v, i) => i % 2 === 0 ? v + nx : v + ny) }
+            updateElement(id, newData)
             e.target.x(0); e.target.y(0)
-          } else {
-            updateElement(id, { x: e.target.x(), y: e.target.y() })
+            reassignPageIfMoved(el, newData)
+          } else if (el) {
+            const newData = { x: e.target.x(), y: e.target.y() }
+            updateElement(id, newData)
+            reassignPageIfMoved(el, newData)
           }
         }
-      }, [selectedIds, pushHistory, updateElement])
+      }, [selectedIds, pushHistory, updateElement, getPageIdAtPoint, setElementPageId])
 
       // Verilmiş enə görə mətnin daxildə tutduğu real hündürlük — qutu bundan aşağı kiçilməsin
       const minTextAreaHeight = (el: CanvasElement, boxWidth: number) => {
@@ -987,21 +1279,30 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         }
       }
 
-      const commonProps = (el: CanvasElement): ShapeProps => ({
-        id: el.id,
-        draggable: tool === 'select',
-        opacity: el.data.opacity ?? 1,
-        onClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
-          e.cancelBubble = true
-          handleElementClick(el, e)
-        },
-        onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
-          e.cancelBubble = true
-        },
-        onDragStart: () => handleDragStart(el.id),
-        onDragEnd:   (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
-        onTransformEnd: (e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e),
-      })
+      // Element-in page-i aktivdirmi? (heç bir page seçilməyibsə hamısı "aktiv" sayılır)
+      const isPageActive = useCallback((pid?: string) => (
+          activePageId === null || activePageId === undefined ? true : pid === activePageId
+      ), [activePageId])
+
+      const commonProps = (el: CanvasElement): ShapeProps => {
+        const ghost = !isPageActive(el.page_id)
+        return {
+          id: el.id,
+          draggable: tool === 'select' && !ghost,
+          listening: !ghost,
+          opacity: (el.data.opacity ?? 1) * (ghost ? 0.35 : 1),
+          onClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
+            e.cancelBubble = true
+            handleElementClick(el, e)
+          },
+          onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
+            e.cancelBubble = true
+          },
+          onDragStart: () => handleDragStart(el.id),
+          onDragEnd:   (e: Konva.KonvaEventObject<DragEvent>) => handleDragEnd(el.id, e),
+          onTransformEnd: (e: Konva.KonvaEventObject<Event>) => handleTransformEnd(el.id, e),
+        }
+      }
 
       // Path shape-lər üçün ortaq render helper
       const renderPathShape = (
@@ -1120,6 +1421,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                     key={el.id}
                     el={el}
                     draggable={tool === 'select' && editingId !== el.id}
+                    ghost={!isPageActive(el.page_id)}
                     selected={selectedIds.includes(el.id)}
                     editing={editingId === el.id}
                     onSelect={(e) => { e.cancelBubble = true; handleElementClick(el, e) }}
@@ -1313,8 +1615,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
       // 3 sütunlu grid: hər A4 arasında GAP boşluq var
       // Səhifə canvas koordinatında: col * (A4_W + GAP), row * (A4_H + GAP)
-      const COLS    = 3
-      const PAGE_GAP = 40  // canvas koordinatında px
+      const COLS    = GRID_COLS
+      const PAGE_GAP = GRID_PAGE_GAP  // canvas koordinatında px
 
       // Hər page-in canvas mövqeyini hesabla
       const pagePositions = pages.map((_, idx) => {
@@ -1427,19 +1729,20 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
               </Layer>
 
               <Layer>
-                {/* Aktiv olmayan page-lərin elementləri — solğun, seçilə bilməz */}
-                {pages.map((page) => {
-                  if (page.id === activePageId) return null
-                  const els = allPageElements[page.id] || []
-                  if (els.length === 0) return null
-                  return (
-                      <Group key={`ghost-${page.id}`} opacity={0.35} listening={false}>
-                        {[...els].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map((el) => renderElement(el))}
-                      </Group>
-                  )
-                })}
-                {/* Aktiv page-in elementləri */}
-                {[...elements].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)).map((el) => renderElement(el))}
+                {/* BÜTÜN page-lərin elementləri TƏK bir map-də render olunur (aktiv page-in
+                    elementləri əvvəllər ayrı Group-a keçirdi, bu da page seçiləndə həmin
+                    elementlərin (xüsusən Image-in) remount olmasına və bununla da şəklin
+                    bir anlıq/yenidən yüklənməsi lazım olmasına səbəb olurdu — nadir hallarda
+                    şəkil heç yüklənmirdi. İndi eyni el.id həmişə eyni siyahıda qalır,
+                    React node-u sadəcə yerini dəyişir, remount etmir).
+                    Qeyri-aktiv page-lərin elementləri əvvəldə (altda, solğun),
+                    aktiv page-in elementləri sonda (üstdə) sıralanır. */}
+                {[...elements].sort((a, b) => {
+                  const aActive = isPageActive(a.page_id) ? 1 : 0
+                  const bActive = isPageActive(b.page_id) ? 1 : 0
+                  if (aActive !== bActive) return aActive - bActive
+                  return (a.z_index ?? 0) - (b.z_index ?? 0)
+                }).map((el) => renderElement(el))}
                 {selBox && selBox.w > 2 && (
                     <Rect
                         x={selBox.x} y={selBox.y} width={selBox.w} height={selBox.h}
@@ -1616,17 +1919,30 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
 export default CanvasBoard
 
+// Qlobal şəkil cache — eyni URL remount olsa belə yenidən yüklənməsin
+const imageCache = new Map<string, HTMLImageElement>()
+
 function ImageElement({ el, commonProps }: { el: CanvasElement; commonProps: object }) {
-  const [image, setImage] = useState<HTMLImageElement | null>(null)
+  const src = (el.data.src as string | undefined) ?? ''
+  const [image, setImage] = useState<HTMLImageElement | null>(() => (src ? imageCache.get(src) ?? null : null))
   const d = el.data
   useEffect(() => {
-    if (!d.src) return
+    if (!src) return
+    // Cache-də varsa dərhal istifadə et
+    const cached = imageCache.get(src)
+    if (cached) {
+      setImage(cached)
+      return
+    }
     const img = new window.Image()
     img.crossOrigin = 'anonymous'
-    img.src = d.src
-    img.onload  = () => setImage(img)
-    img.onerror = () => console.error('Şəkil yüklənmədi:', d.src)
-  }, [d.src])
+    img.onload = () => {
+      imageCache.set(src, img)
+      setImage(img)
+    }
+    img.onerror = () => console.error('Şəkil yüklənmədi:', src)
+    img.src = src
+  }, [src])
   if (!image) return null
   return <KonvaImage {...commonProps} x={d.x} y={d.y} width={d.width} height={d.height} image={image} rotation={d.rotation} />
 }

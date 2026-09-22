@@ -5,9 +5,11 @@ import {
 } from 'lucide-react'
 import { useRef, useState, useEffect } from 'react'
 import { useCanvasStore } from '../../store/canvasStore'
+import { usePageStore } from '../../store/pageStore'
 import { uploadApi } from '../../api/upload'
 import { v4 as uuidv4 } from 'uuid'
 import type { ElementType } from '../../types'
+import { A4_W_PT, A4_H_PT, GRID_COLS, GRID_PAGE_GAP } from './CanvasBoard'
 
 type Tool = ElementType | 'select' | 'pan' | 'eraser'
 
@@ -60,6 +62,7 @@ export default function Toolbar({
         groupSelected, ungroupSelected, addElement, setElements,
         eraserSize, setEraserSize, elements, updateElement,
     } = useCanvasStore()
+    const { activePageId, pages } = usePageStore()
 
     const imageInputRef = useRef<HTMLInputElement>(null)
     const [shapeOpen, setShapeOpen]   = useState(false)
@@ -264,20 +267,6 @@ export default function Toolbar({
 
             <div className="flex-1" />
 
-            {/* PDF toggle */}
-            <button
-                onClick={onTogglePdf}
-                title={pdfOpen ? 'PDF-i bağla' : 'PDF aç'}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all shrink-0 ${
-                    pdfOpen
-                        ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-            >
-                <BookOpen size={15} />
-                PDF
-            </button>
-
             {/* Export */}
             <button
                 onClick={onExport}
@@ -304,10 +293,18 @@ export default function Toolbar({
                         const img = new window.Image()
                         img.src = url
                         img.onload = () => {
+                            // Şəkli aktiv page-in öz sahəsinin içində yerləşdir —
+                            // əvvəllər həmişə qlobal (100,100) qoyulurdu ki, bu, çoxsəhifəli
+                            // görünüşdə page1-in üstünə düşürdü, page_id isə activePageId olurdu.
+                            const pageIdx = pages.findIndex(p => p.id === activePageId)
+                            const col = pageIdx >= 0 ? pageIdx % GRID_COLS : 0
+                            const row = pageIdx >= 0 ? Math.floor(pageIdx / GRID_COLS) : 0
+                            const pageOffsetX = col * (A4_W_PT + GRID_PAGE_GAP)
+                            const pageOffsetY = row * (A4_H_PT + GRID_PAGE_GAP)
                             addElement({
-                                id: uuidv4(), canvas_id: '', type: 'image',
+                                id: uuidv4(), canvas_id: '', page_id: activePageId || '', type: 'image',
                                 data: {
-                                    x: 100, y: 100,
+                                    x: pageOffsetX + 100, y: pageOffsetY + 100,
                                     width:  Math.min(img.width  / 2, 600),
                                     height: Math.min(img.height / 2, 600),
                                     src: url,

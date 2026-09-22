@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, BookOpen, FileDown } from 'lucide-react'
 import { canvasApi } from '../api/canvas'
 import { booksApi } from '../api/books'
+import { pagesApi } from '../api/pages'
 import { useCanvasStore } from '../store/canvasStore'
 import { useBookStore } from '../store/bookStore'
 import { usePageStore } from '../store/pageStore'
@@ -21,9 +22,9 @@ export default function Editor() {
   const [searchParams]   = useSearchParams()
   const bookId = searchParams.get('book')
 
-  const { setElements, isDirty } = useCanvasStore()
-  const { setCurrentBook }       = useBookStore()
-  const { loadPages }            = usePageStore()
+  const { setElements, isDirty, elements } = useCanvasStore()
+  const { setCurrentBook }                 = useBookStore()
+  const { loadPages, activePageId, pages } = usePageStore()
 
   const [canvas,        setCanvas]        = useState<Canvas | null>(null)
   const [canvasTitle,   setCanvasTitle]   = useState('')
@@ -99,25 +100,76 @@ export default function Editor() {
   const handleExport = async () => {
     if (!canvasId || !canvasBoardRef.current) return
     try {
-      const dataUrl = canvasBoardRef.current.exportImage()
-      if (!dataUrl) { alert('Canvas boşdur'); return }
-      const img = new window.Image()
-      img.src = dataUrl
-      await new Promise<void>((res) => { img.onload = () => res() })
-      const w = img.width / 2
-      const h = img.height / 2
-      const pdf = new jsPDF({ orientation: w > h ? 'landscape' : 'portrait', unit: 'px', format: [w, h], hotfixes: ['px_scaling'] })
-      pdf.addImage(dataUrl, 'PNG', 0, 0, w, h)
+      // activePageId null-dırsa birinci page-i aktiv et ki, elementlər düzgün filter edilsin
+      let currentActivePageId = activePageId
+      if (!currentActivePageId && pages.length > 0) {
+        currentActivePageId = pages[0].id
+        usePageStore.getState().setActivePageId(currentActivePageId)
+      }
+
+      // 1. Bütün page-ləri force-save et (yalnız aktiv deyil, hamısını)
+      //    canvasStore.elements memory-dəki ən son state-i ehtiva edir
+      for (const page of pages) {
+        const pageEls = elements.filter(el => el.page_id === page.id)
+        if (pageEls.length === 0) continue
+        const batch = pageEls.map((el, idx) => ({
+          id: el.id,
+          type: el.type,
+          data: el.data,
+          z_index: idx,
+        }))
+        try {
+          await pagesApi.batchSave(canvasId, page.id, batch)
+        } catch (err) {
+          console.error(`Page ${page.id} save xətası:`, err)
+        }
+      }
+      useCanvasStore.getState().setDirty(false)
+
+      // 2. Bütün page-ləri off-screen render et (canvasStore-dan page_id ilə filter)
+      const pageImages = await canvasBoardRef.current.exportAllPages()
+      if (!pageImages || pageImages.length === 0) {
+        alert('Canvas boşdur')
+        return
+      }
+
+      // İlk page-in ölçüsündən başla (pixelRatio=2 olduğundan yarıya böl)
+      const first = pageImages[0]
+      const fw = first.w  // A4_W_PT
+      const fh = first.h  // A4_H_PT
+
+      const pdf = new jsPDF({
+        orientation: fw > fh ? 'landscape' : 'portrait',
+        unit: 'px',
+        format: [fw, fh],
+        hotfixes: ['px_scaling'],
+      })
+
+      pageImages.forEach(({ dataUrl, w, h }, idx) => {
+        if (idx > 0) {
+          pdf.addPage([w, h], w > h ? 'landscape' : 'portrait')
+        }
+        // pixelRatio=2 ilə render edildiyindən image ölçüsü 2x — bölürük
+        pdf.addImage(dataUrl, 'PNG', 0, 0, w, h)
+      })
+
       const blob = pdf.output('blob')
+
+      // Önce backend-ə yüklə, alınmasa birbaşa download et
       try {
         const res = await canvasApi.exportPdf(canvasId, blob)
         const url = res.data.data.url
         const a = document.createElement('a')
-        a.href = url; a.download = `${canvasTitle || 'canvas'}.pdf`; a.target = '_blank'; a.click()
+        a.href = url
+        a.download = `${canvasTitle || 'canvas'}.pdf`
+        a.target = '_blank'
+        a.click()
       } catch {
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
-        a.href = url; a.download = `${canvasTitle || 'canvas'}.pdf`; a.click()
+        a.href = url
+        a.download = `${canvasTitle || 'canvas'}.pdf`
+        a.click()
         setTimeout(() => URL.revokeObjectURL(url), 1000)
       }
     } catch (err) {

@@ -15,6 +15,9 @@ interface CanvasState {
     addElement: (element: CanvasElement) => void
     updateElement: (id: string, data: Partial<ElementData>) => void
     updateElements: (ids: string[], data: Partial<ElementData>) => void
+    // Elementin hansı page-ə aid olduğunu dəyişir — sürükləyib başqa A4-ün üstünə
+    // qoyanda çağırılır ki, element vizual olaraq harda görünürsə ona da aid olsun
+    setElementPageId: (id: string, pageId: string) => void
     deleteElement: (id: string) => void
     deleteSelected: () => void
     setSelectedId: (id: string | null) => void
@@ -78,6 +81,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         set((state) => ({
             elements: state.elements.map((el) =>
                 ids.includes(el.id) ? { ...el, data: { ...el.data, ...data } } : el
+            ),
+            isDirty: true,
+        }))
+    },
+
+    setElementPageId: (id, pageId) => {
+        set((state) => ({
+            elements: state.elements.map((el) =>
+                el.id === id && el.page_id !== pageId ? { ...el, page_id: pageId } : el
             ),
             isDirty: true,
         }))

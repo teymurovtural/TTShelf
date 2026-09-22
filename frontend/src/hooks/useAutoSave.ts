@@ -15,7 +15,14 @@ export function useAutoSave(canvasId: string, intervalMs = 2000) {
 
         timerRef.current = setTimeout(async () => {
             try {
-                const batch = elements.map((el, idx) => ({
+                const pageEls = elements.filter(el => el.page_id === activePageId)
+
+                // DEBUG
+                console.log(`AutoSave: page=${activePageId}, elements=${pageEls.length}, total=${elements.length}`)
+                const allPageIds = [...new Set(elements.map(el => el.page_id))]
+                console.log('All page_ids in store:', allPageIds)
+
+                const batch = pageEls.map((el, idx) => ({
                     id: el.id,
                     type: el.type,
                     data: el.data,

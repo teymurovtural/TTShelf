@@ -9,6 +9,8 @@ interface Props {
   draggable: boolean
   selected: boolean
   editing: boolean
+  // Element başqa (aktiv olmayan) page-ə aiddirsə true — solğun və seçilməz göstərilir
+  ghost?: boolean
   onSelect: (e: Konva.KonvaEventObject<MouseEvent>) => void
   onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => void
   onDragStart: () => void
@@ -38,14 +40,14 @@ export function textBox(el: CanvasElement): { width: number; height: number } {
     letterSpacing: d.letterSpacing ?? 0,
   })
   return area
-    ? { width: Math.abs(d.width), height: Math.max(Math.abs(d.height ?? 0), 10) }
-    : { width: Math.max(layout.width, 8), height: Math.max(layout.height, defaults.fontSize) }
+      ? { width: Math.abs(d.width), height: Math.max(Math.abs(d.height ?? 0), 10) }
+      : { width: Math.max(layout.width, 8), height: Math.max(layout.height, defaults.fontSize) }
 }
 
 export default function RichTextShape({
-  el, draggable, selected, editing,
-  onSelect, onDblClick, onDragStart, onDragEnd, onTransform, onTransformEnd,
-}: Props) {
+                                        el, draggable, selected, editing, ghost = false,
+                                        onSelect, onDblClick, onDragStart, onDragEnd, onTransform, onTransformEnd,
+                                      }: Props) {
   const d = el.data as any
   const area = isAreaText(el)
 
@@ -75,57 +77,58 @@ export default function RichTextShape({
   layout.lines.forEach((line, li) => {
     line.segments.forEach((seg, si) => {
       segments.push(
-        <Text
-          key={`${li}-${si}`}
-          x={seg.x} y={seg.y}
-          text={seg.text}
-          fontSize={seg.style.fontSize}
-          fontFamily={seg.style.fontFamily}
-          fontStyle={seg.style.fontStyle}
-          textDecoration={seg.style.textDecoration}
-          fill={seg.style.fill}
-          letterSpacing={d.letterSpacing ?? 0}
-          lineHeight={1}
-          wrap="none"
-          listening={false}
-          perfectDrawEnabled={false}
-        />,
+          <Text
+              key={`${li}-${si}`}
+              x={seg.x} y={seg.y}
+              text={seg.text}
+              fontSize={seg.style.fontSize}
+              fontFamily={seg.style.fontFamily}
+              fontStyle={seg.style.fontStyle}
+              textDecoration={seg.style.textDecoration}
+              fill={seg.style.fill}
+              letterSpacing={d.letterSpacing ?? 0}
+              lineHeight={1}
+              wrap="none"
+              listening={false}
+              perfectDrawEnabled={false}
+          />,
       )
     })
   })
 
   return (
-    <Group
-      id={el.id}
-      name="rich-text"
-      x={d.x ?? 0} y={d.y ?? 0}
-      width={w} height={h}
-      rotation={d.rotation ?? 0}
-      opacity={d.opacity ?? 1}
-      draggable={draggable}
-      onClick={onSelect}
-      onDblClick={onDblClick}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      onTransform={onTransform}
-      onTransformEnd={onTransformEnd}
-    >
-      {/* Tutma sahəsi — bütün qutu sürüklənə bilir (əvvəl listening=false idi, ona görə tutulmurdu) */}
-      <Rect width={w} height={h} fill="transparent" />
-
-      {/* Qutu sərhədi — area mətn üçün, yaxud boş mətn üçün */}
-      {(area || isEmpty) && (
-        <Rect
+      <Group
+          id={el.id}
+          name="rich-text"
+          x={d.x ?? 0} y={d.y ?? 0}
           width={w} height={h}
-          stroke={selected ? '#6366f1' : '#c7d2fe'}
-          strokeWidth={1}
-          dash={[4, 3]}
-          listening={false}
-          perfectDrawEnabled={false}
-        />
-      )}
+          rotation={d.rotation ?? 0}
+          opacity={(d.opacity ?? 1) * (ghost ? 0.35 : 1)}
+          listening={!ghost}
+          draggable={draggable && !ghost}
+          onClick={onSelect}
+          onDblClick={onDblClick}
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          onTransform={onTransform}
+          onTransformEnd={onTransformEnd}
+      >
+        {/* Tutma sahəsi — bütün qutu sürüklənə bilir (əvvəl listening=false idi, ona görə tutulmurdu) */}
+        <Rect width={w} height={h} fill="transparent" />
 
-      {!editing && segments}
-    </Group>
+        {/* Qutu sərhədi — area mətn üçün, yaxud boş mətn üçün */}
+        {(area || isEmpty) && (
+            <Rect
+                width={w} height={h}
+                stroke={selected ? '#6366f1' : '#c7d2fe'}
+                strokeWidth={1}
+                dash={[4, 3]}
+                listening={false}
+                perfectDrawEnabled={false}
+            />
+        )}
+
+        {!editing && segments}
+      </Group>
   )
 }

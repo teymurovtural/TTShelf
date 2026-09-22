@@ -52,6 +52,8 @@ func NewMinioClient(cfg *config.MinioConfig) (*MinioClient, error) {
 	if err := client.SetBucketPolicy(ctx, cfg.BucketName, policy); err != nil {
 		return nil, fmt.Errorf("failed to set bucket policy: %w", err)
 	}
+	// Not: MinIO CORS-u MINIO_API_CORS_ALLOW_ORIGIN env var ilə və ya
+	// nginx proxy üzərindən idarə edilir (minio-go SDK-da SetBucketCors yoxdur)
 
 	log.Println("MinIO connected successfully")
 
