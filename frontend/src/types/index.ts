@@ -73,6 +73,8 @@ export interface CanvasPage {
     title: string
     orientation: 'portrait' | 'landscape'
     locked: boolean
+    x?: number
+    y?: number
     created_at: string
     updated_at: string
 }

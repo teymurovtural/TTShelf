@@ -6,8 +6,8 @@ import {
 } from 'react-konva'
 import { useCanvasStore } from '../../store/canvasStore'
 import { usePageStore } from '../../store/pageStore'
-import { uploadApi } from '../../api/upload'
 import { pagesApi } from '../../api/pages'
+import { uploadApi } from '../../api/upload'
 import type { CanvasElement, ElementData, TextRun } from '../../types'
 import { v4 as uuidv4 } from 'uuid'
 import RichTextShape, { isAreaText, textBox } from './RichTextShape'
@@ -194,12 +194,47 @@ export const A4_H_PT = 1123
 export const GRID_COLS = 3
 export const GRID_PAGE_GAP = 40
 
+// Hər page-in canvas mövqeyini düzgün hesabla —
+// hər sütunun eni o sütundakı ən geniş page-ə, hər sıranın hündürlüyü isə
+// həmin sıradakı ən hündür page-ə bərabərdir (landscape qarışıq olarsa üst-üstə düşmür)
+export function computePagePositions(
+    pages: Array<{ orientation?: string; x?: number; y?: number }>
+): Array<{ x: number; y: number }> {
+  const COLS = GRID_COLS
+  const GAP  = GRID_PAGE_GAP
+
+  const getSize = (p: { orientation?: string }) => ({
+    w: p.orientation === 'landscape' ? A4_H_PT : A4_W_PT,
+    h: p.orientation === 'landscape' ? A4_W_PT : A4_H_PT,
+  })
+
+  const rowCount = Math.ceil(pages.length / COLS)
+  const colWidths  = Array(COLS).fill(0) as number[]
+  const rowHeights = Array(rowCount).fill(0) as number[]
+
+  pages.forEach((p, i) => {
+    const col = i % COLS
+    const row = Math.floor(i / COLS)
+    const { w, h } = getSize(p)
+    if (w > colWidths[col])  colWidths[col]  = w
+    if (h > rowHeights[row]) rowHeights[row] = h
+  })
+
+  const colX = [0]
+  for (let c = 1; c < COLS; c++) colX.push(colX[c - 1] + colWidths[c - 1] + GAP)
+
+  const rowY = [0]
+  for (let r = 1; r < rowCount; r++) rowY.push(rowY[r - 1] + rowHeights[r - 1] + GAP)
+
+  return pages.map((p, i) => ({
+    x: p.x ?? colX[i % COLS],
+    y: p.y ?? rowY[Math.floor(i / COLS)],
+  }))
+}
+
 interface CanvasBoardProps { width: number; height: number; canvasId: string }
 export interface CanvasBoardHandle {
-  exportImage: () => string | null
   exportAllPages: () => Promise<Array<{ dataUrl: string; w: number; h: number }>>
-  // Stage-in görünən mərkəzini stage koordinatında qaytarır (image drop üçün)
-  getViewCenter: () => { x: number; y: number }
 }
 
 const SHAPE_DEFAULTS = {
@@ -230,22 +265,17 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       } = useCanvasStore()
 
       // Aktiv page-in orientasiyasına görə A4 ölçüsü
-      const { pages, activePageId, switchPage, createPage, deletePage } = usePageStore()
-      const activePage = pages.find(p => p.id === activePageId)
-      const isLandscape = activePage?.orientation === 'landscape'
-      const A4_W = isLandscape ? A4_H_PT : A4_W_PT
-      const A4_H = isLandscape ? A4_W_PT : A4_H_PT
+      const { pages, activePageId, switchPage, createPage, deletePage, reorderPages, movePagePosition } = usePageStore()
 
       // Verilmiş canvas koordinatı hansı page-in A4 sahəsinin üstündədirsə,
       // onun id-sini qaytarır. Heç birinin üstündə deyilsə undefined.
       // Sürüklənən elementin son mövqeyinə görə page_id-ni doğru təyin etmək üçün istifadə olunur —
       // əvvəllər element hara sürüklənirsə sürüklənsin, yaradıldığı (activePageId) page-ə "yapışıb" qalırdı.
       const getPageIdAtPoint = useCallback((x: number, y: number): string | undefined => {
+        const positions = computePagePositions(pages)
         for (let i = pages.length - 1; i >= 0; i--) {
           const page = pages[i]
-          const col = i % GRID_COLS
-          const row = Math.floor(i / GRID_COLS)
-          const ppos = { x: col * (A4_W_PT + GRID_PAGE_GAP), y: row * (A4_H_PT + GRID_PAGE_GAP) }
+          const ppos = positions[i]
           const size = {
             w: page.orientation === 'landscape' ? A4_H_PT : A4_W_PT,
             h: page.orientation === 'landscape' ? A4_W_PT : A4_H_PT,
@@ -286,6 +316,8 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
       const [isSpacePan,  setIsSpacePan]  = useState(false)
       const [isDragging,  setIsDragging]  = useState(false)
 
+      // Page drag state
+
       // Rubber band selection state
       const [selBox, setSelBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
       const selBoxRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
@@ -321,54 +353,13 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
       // Export — yalnız A4 sahəsini çıxar
       useImperativeHandle(ref, () => ({
-        // Stage-in görünən mərkəzini stage koordinatında qaytarır
-        // Məntiq: ekran mərkəzi → stage koordinatına çevir
-        getViewCenter: () => {
-          const stage = stageRef.current
-          if (!stage) return { x: 400, y: 400 }
-          const cx = width  / 2
-          const cy = height / 2
-          return {
-            x: (cx - stagePosRef.current.x) / stageScaleRef.current,
-            y: (cy - stagePosRef.current.y) / stageScaleRef.current,
-          }
-        },
-
-        exportImage: () => {
-          if (!stageRef.current) return null
-          const tr = transformerRef.current
-          tr?.hide(); stageRef.current.batchDraw()
-          const dataUrl = stageRef.current.toDataURL({
-            pixelRatio: 2,
-            mimeType: 'image/png',
-            x: 0,
-            y: 0,
-            width:  A4_W,
-            height: A4_H,
-          })
-          tr?.show(); stageRef.current.batchDraw()
-          return dataUrl
-        },
-
         // Bütün page-ləri off-screen Konva stage-də render edib PNG array qaytarır
         exportAllPages: async () => {
           const results: Array<{ dataUrl: string; w: number; h: number }> = []
 
-          const COLS = GRID_COLS
-          const PAGE_GAP = GRID_PAGE_GAP
-
-          // Render zamanı ilə eyni offset hesabı — hər page öz ölçüsünü nəzərə alır
-          // pagePositions[i] = render-dəki pagePositions ilə eyni olmalıdır
-          // Render: col * (A4_W_PT + GAP), row * (A4_H_PT + GAP) — portrait bazasında
-          // (landscape olsa da render eyni formuldan istifadə edir)
-          const getExportOffset = (idx: number) => {
-            const col = idx % COLS
-            const row = Math.floor(idx / COLS)
-            return {
-              x: col * (A4_W_PT + PAGE_GAP),
-              y: row * (A4_H_PT + PAGE_GAP),
-            }
-          }
+          // Render ilə eyni mövqe hesabı — landscape/portrait qarışıq olarsa üst-üstə düşmür
+          const exportPositions = computePagePositions(pages)
+          const getExportOffset = (idx: number) => exportPositions[idx] ?? { x: 0, y: 0 }
 
           for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
             const page = pages[pageIdx]
@@ -549,7 +540,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
 
           return results
         },
-      }), [pages, elements, A4_W, A4_H])
+      }), [pages, elements])
 
       // Transformer — YALNIZ tək element seçiləndə işlət
       // Çoxlu seçimdə Transformer.nodes([]) — viewport-u tərpətməsin
@@ -870,6 +861,53 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         const pos      = getPointerOnStage()
         const isStage = e.target.getType() === 'Stage'
 
+        // ── Boş yerə klikdə aktiv page-i sürüklə ──
+        if (tool === 'select' && isStage && activePageId) {
+          const activePgIdx = pages.findIndex(p => p.id === activePageId)
+          if (activePgIdx >= 0) {
+            const ppos = pagePositionsRef.current[activePgIdx]
+            const pg   = pages[activePgIdx]
+            const pw   = pg.orientation === 'landscape' ? A4_H_PT : A4_W_PT
+            const ph   = pg.orientation === 'landscape' ? A4_W_PT : A4_H_PT
+            const inPage = pos.x >= ppos.x && pos.x <= ppos.x + pw &&
+                pos.y >= ppos.y && pos.y <= ppos.y + ph
+            if (inPage) {
+              const startStageX  = ppos.x
+              const startStageY  = ppos.y
+              const startClientX = e.evt.clientX
+              const startClientY = e.evt.clientY
+              const stageEl = stageRef.current
+              let dragging = false
+
+              const onMove = (mv: MouseEvent) => {
+                const dx = mv.clientX - startClientX
+                const dy = mv.clientY - startClientY
+                if (!dragging && Math.hypot(dx, dy) < 6) return
+                if (!dragging) {
+                  dragging = true
+                  if (stageEl) stageEl.container().style.cursor = 'grabbing'
+                }
+                movePagePosition(
+                    pg.id,
+                    startStageX + dx / stageScaleRef.current,
+                    startStageY + dy / stageScaleRef.current,
+                )
+              }
+
+              const onUp = () => {
+                window.removeEventListener('mousemove', onMove)
+                window.removeEventListener('mouseup',   onUp)
+                if (stageEl) stageEl.container().style.cursor = ''
+              }
+
+              window.addEventListener('mousemove', onMove)
+              window.addEventListener('mouseup',   onUp)
+              return
+            }
+          }
+        }
+
+
         if (tool === 'select') {
           if (isStage) {
             setSelectedIds([])
@@ -933,7 +971,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         if (!activePageId) {
           // Birinci page-i avtomatik aktiv et
           if (pages.length > 0) {
-            switchPage(canvasId, pages[0].id)
+            void switchPage(canvasId, pages[0].id)
           }
           return
         }
@@ -1613,20 +1651,10 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                       : 'crosshair'
 
 
-      // 3 sütunlu grid: hər A4 arasında GAP boşluq var
-      // Səhifə canvas koordinatında: col * (A4_W + GAP), row * (A4_H + GAP)
-      const COLS    = GRID_COLS
-      const PAGE_GAP = GRID_PAGE_GAP  // canvas koordinatında px
-
-      // Hər page-in canvas mövqeyini hesabla
-      const pagePositions = pages.map((_, idx) => {
-        const col = idx % COLS
-        const row = Math.floor(idx / COLS)
-        return {
-          x: col * (A4_W_PT + PAGE_GAP),
-          y: row * (A4_H_PT + PAGE_GAP),
-        }
-      })
+      // Hər page-in canvas mövqeyini hesabla — landscape/portrait qarışıq olarsa düzgün aralıq
+      const pagePositions = computePagePositions(pages)
+      const pagePositionsRef = useRef(pagePositions)
+      useEffect(() => { pagePositionsRef.current = pagePositions })
 
       // Aktiv page-in ölçüsü (portrait/landscape)
       const getPageSize = (page: typeof pages[0]) => ({
@@ -1647,7 +1675,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
               pos.x >= ppos.x && pos.x <= ppos.x + size.w &&
               pos.y >= ppos.y && pos.y <= ppos.y + size.h
           ) {
-            if (page.id !== activePageId) switchPage(canvasId, page.id)
+            if (page.id !== activePageId) void switchPage(canvasId, page.id)
             break
           }
         }
@@ -1659,20 +1687,33 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
         y: stagePos.y + cy * stageScale,
       })
 
-      // "+" düyməsinin yeri: sonuncu page-in sağı
-      const lastIdx = pages.length - 1
-      const lastPos = pagePositions[lastIdx] ?? { x: 0, y: 0 }
-      const lastPage = pages[lastIdx]
-      const lastSize = lastPage ? getPageSize(lastPage) : { w: A4_W_PT, h: A4_H_PT }
+      // "+" düyməsinin yeri: aktiv page-in sağı (ya da son page-in sağı)
+      const activePgIdx = pages.findIndex(p => p.id === activePageId)
+      const refIdx  = activePgIdx >= 0 ? activePgIdx : pages.length - 1
+      const refPos  = pagePositions[refIdx] ?? { x: 0, y: 0 }
+      const refPage = pages[refIdx]
+      const refSize = refPage ? getPageSize(refPage) : { w: A4_W_PT, h: A4_H_PT }
       const addBtnCanvas = {
-        x: lastPos.x + lastSize.w,
-        y: lastPos.y + lastSize.h / 2,
+        x: refPos.x + refSize.w,
+        y: refPos.y + refSize.h / 2,
       }
       const addBtnScreen = toScreen(addBtnCanvas.x, addBtnCanvas.y)
 
       const handleAddPage = async () => {
-        try { await createPage(canvasId) }
-        catch { alert('Səhifə yaradılmadı') }
+        try {
+          const newPage = await createPage(canvasId)
+          const curPages = usePageStore.getState().pages
+          const afterIdx = curPages.findIndex(p => p.id === activePageId)
+          // Yeni page sona düşdü — aktiv page-dən sonraya keçir
+          if (afterIdx >= 0 && afterIdx < curPages.length - 1) {
+            const ids = curPages.map(p => p.id)
+            const newId = ids.splice(ids.length - 1, 1)[0]
+            ids.splice(afterIdx + 1, 0, newId)
+            usePageStore.getState().reorderPages(ids)
+            try { await pagesApi.reorder(canvasId, { page_ids: ids }) }
+            catch (err) { console.error('Reorder xətası:', err) }
+          }
+        } catch { alert('Səhifə yaradılmadı') }
       }
 
       const handleDeletePage = async (pageId: string, e: React.MouseEvent) => {
@@ -1767,7 +1808,6 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
               const sw     = size.w * stageScale
               const sh     = size.h * stageScale
               const isActive = activePageId === page.id
-
               return (
                   <div
                       key={`overlay-${page.id}`}
@@ -1781,16 +1821,17 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                         zIndex: 5,
                       }}
                   >
-                    {/* Seçim xətti */}
                     {isActive && (
                         <div style={{
                           position: 'absolute', inset: 0,
-                          border: `2px solid #6366f1`,
+                          border: '2px solid #6366f1',
                           borderRadius: 2,
                           pointerEvents: 'none',
                           boxShadow: '0 0 0 1px rgba(99,102,241,0.2)',
                         }} />
                     )}
+
+
 
                     {/* Səhifə nömrəsi — sol alt künc */}
                     <div style={{
@@ -1800,7 +1841,7 @@ const CanvasBoard = forwardRef<CanvasBoardHandle, CanvasBoardProps>(
                       pointerEvents: 'none',
                       userSelect: 'none',
                     }}>
-                      {idx + 1}
+                      {page.page_number}
                     </div>
 
                     {/* X sil düyməsi — active olanda görünür, pointerEvents: all */}

@@ -114,8 +114,28 @@ export default function PageSidebar({ canvasId }: Props) {
                                     borderRadius: 4,
                                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                                     overflow: 'hidden',
+                                    position: 'relative',
                                 }}>
-                                    <span style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>{idx + 1}</span>
+                                    <span style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0' }}>{page.page_number}</span>
+                                    {isActive && (
+                                        <button
+                                            onClick={e => { e.stopPropagation(); handleToggleOrientation(page) }}
+                                            title={page.orientation === 'portrait' ? 'Landscape et' : 'Portrait et'}
+                                            style={{
+                                                position: 'absolute', bottom: 4, right: 4,
+                                                width: 20, height: 20, borderRadius: 4,
+                                                background: 'rgba(30,41,59,0.75)',
+                                                border: '1px solid rgba(99,102,241,0.4)',
+                                                color: '#a5b4fc', cursor: 'pointer',
+                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                padding: 0,
+                                            }}
+                                            onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#6366f1'}
+                                            onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'rgba(30,41,59,0.75)'}
+                                        >
+                                            <RotateCcw size={11} />
+                                        </button>
+                                    )}
                                 </div>
 
                                 {page.locked && (
@@ -138,7 +158,7 @@ export default function PageSidebar({ canvasId }: Props) {
                                         onDoubleClick={e => { e.stopPropagation(); startEdit(page) }}
                                         style={{ fontSize: 10, textAlign: 'center', color: isActive ? '#a5b4fc' : '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '3px 4px', margin: 0 }}
                                     >
-                                        {page.title || `Səhifə ${idx + 1}`}
+                                        {page.title || `Səhifə ${page.page_number}`}
                                     </p>
                                 )}
                             </div>

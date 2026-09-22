@@ -14,6 +14,7 @@ interface PageState {
     updatePage: (id: string, patch: Partial<CanvasPage>) => void
     removePage: (id: string) => void
     reorderPages: (ids: string[]) => void
+    movePagePosition: (id: string, x: number, y: number) => void
 
     loadPages: (canvasId: string) => Promise<void>
     switchPage: (canvasId: string, pageId: string) => Promise<void>
@@ -56,7 +57,11 @@ export const usePageStore = create<PageState>((set, get) => ({
             return { pages: reordered }
         }),
 
-    // Bütün page-ləri və elementlərini yüklə — hər element page_id ilə canvasStore-a yazılır
+    movePagePosition: (id, x, y) =>
+        set((state) => ({
+            pages: state.pages.map((p) => p.id === id ? { ...p, x, y } : p),
+        })),
+
     loadPages: async (canvasId) => {
         set({ loading: true })
         try {
@@ -66,12 +71,10 @@ export const usePageStore = create<PageState>((set, get) => ({
 
             if (pages.length === 0) return
 
-            // Bütün page-lərin elementlərini paralel yüklə
             const results = await Promise.all(
                 pages.map((p) => pagesApi.getElements(canvasId, p.id))
             )
 
-            // Hər elementin page_id-sini təyin et, hamısını bir array-ə yığ
             const allElements: CanvasElement[] = []
             results.forEach((r, i) => {
                 const els: CanvasElement[] = r.data.data || []
@@ -80,9 +83,7 @@ export const usePageStore = create<PageState>((set, get) => ({
                 })
             })
 
-            // Bütün elementləri canvasStore-a yaz
             useCanvasStore.getState().setElements(allElements)
-
             set({ activePageId: pages[0].id })
         } catch (err) {
             console.error('Page-lər yüklənmədi:', err)
@@ -91,12 +92,10 @@ export const usePageStore = create<PageState>((set, get) => ({
         }
     },
 
-    // Page dəyiş — aktiv page-i save et, yenisini aktiv et
     switchPage: async (canvasId, pageId) => {
         const { activePageId } = get()
         if (activePageId === pageId) return
 
-        // Aktiv page-i save et
         if (activePageId) {
             const { elements, isDirty } = useCanvasStore.getState()
             const pageEls = elements.filter(el => el.page_id === activePageId)
@@ -117,7 +116,6 @@ export const usePageStore = create<PageState>((set, get) => ({
         }
 
         set({ activePageId: pageId })
-        // canvasStore.elements dəyişmir — render zamanı page_id ilə filter edilir
     },
 
     createPage: async (canvasId, title, orientation = 'portrait') => {
@@ -128,7 +126,6 @@ export const usePageStore = create<PageState>((set, get) => ({
         })
         const page = res.data.data
         get().addPage(page)
-        // Aktiv page-i save et, sonra yeni page-i aktiv et
         await get().switchPage(canvasId, page.id)
         return page
     },
@@ -136,7 +133,6 @@ export const usePageStore = create<PageState>((set, get) => ({
     deletePage: async (canvasId, pageId) => {
         await pagesApi.delete(canvasId, pageId)
 
-        // Həmin page-in elementlərini canvasStore-dan sil
         const { elements } = useCanvasStore.getState()
         useCanvasStore.getState().setElements(
             elements.filter(el => el.page_id !== pageId)
